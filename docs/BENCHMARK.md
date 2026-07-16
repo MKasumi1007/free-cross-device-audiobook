@@ -1,6 +1,6 @@
 # Stage 0 Benchmark
 
-Status: Mac baseline and Release Range probe complete; bounded GitHub CPU TTS experiment running.
+Status: stage 0 benchmark and storage probes complete.
 
 ## Machine
 
@@ -57,15 +57,24 @@ Run date: 2026-07-17.
 - Requested range: bytes 0 through 1,023.
 - Result: HTTP 206 and exactly 1,024 response bytes.
 
-Pending GitHub CPU experiment:
+## GitHub Actions CPU Result
 
-- Install and model-download time.
-- Peak runner memory and disk use.
-- Three-run stability if the first bounded experiment is acceptable.
-- Policy decision. Production remains `MAC_AGENT` regardless of experiment success unless v1.3 is explicitly revised.
+Run date: 2026-07-17.
+
+- Runner: GitHub-hosted Ubuntu CPU runner with a 45-minute first-run hard timeout.
+- Input safety: synthetic `espeak-ng` reference and a purpose-written short sentence; no user voice or book content.
+- Environment and dependency setup completed successfully in about two minutes.
+- Model files downloaded successfully and generation entered Qwen inference.
+- The short sentence produced no completed audio after about 42 minutes of CPU inference.
+- GitHub canceled the job at its hard limit; total run time was 2,720 seconds.
+- Output validation was skipped because no audio file completed.
+- Peak runner memory and disk measurements were unavailable because the benchmark result is written only after inference returns.
+- A three-run stability test was rejected because the first run was already too slow for production use.
+
+The retained manual workflow now has a 15-minute safety limit. It is a compatibility smoke test only and must not be used as an audiobook generation queue.
 
 ## Decision
 
 Default production generator: `MAC_AGENT`.
 
-Reason: it meets the no-payment requirement and GitHub Actions terms do not support treating hosted runners as a general audiobook compute backend.
+Reason: it meets the no-payment requirement, the Mac baseline is dramatically faster, and GitHub Actions terms do not support treating hosted runners as a general audiobook compute backend.

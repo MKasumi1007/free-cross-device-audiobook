@@ -29,10 +29,12 @@ Started: 2026-07-16.
 - Prepared a manual-only, 45-minute-bounded GitHub Actions CPU TTS experiment using only a synthetic voice.
 - Prepared a public Release sine-wave probe for actual HTTP Range validation after repository creation.
 - Published the synthetic Release probe and confirmed HTTP 206 with exactly 1,024 requested bytes.
+- Ran the bounded GitHub CPU TTS experiment: setup and model download succeeded, but one short sentence did not finish after about 42 minutes of inference.
+- Confirmed the 45-minute Actions hard timeout canceled the experiment after 2,720 total seconds.
+- Reduced the retained manual compatibility workflow to a 15-minute limit and rejected Actions as a production TTS worker.
 
 ### Pending
 
-- Finish the bounded GitHub Actions CPU TTS experiment and record its result.
 - Create and inspect a Firebase Spark project after user login.
 
 ### Risks and Decisions
@@ -41,3 +43,4 @@ Started: 2026-07-16.
 - The user's real EPUB and real voice are excluded from stage 0.
 - No cloud resource, billing account or paid service has been created.
 - The baseline implies about 35 minutes generation per 10 minutes of audio and about 17.3 hours per 5-hour batch before retries; background scheduling and checkpoint recovery are essential.
+- GitHub-hosted CPU inference is far too slow for long-form generation; production remains `MAC_AGENT` and no three-run cloud stability test will be spent.
