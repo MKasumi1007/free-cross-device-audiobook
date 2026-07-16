@@ -13,4 +13,3 @@ ffmpeg -hide_banner -loglevel error -y \
   "$output_dir/reference.wav"
 
 printf 'Created private local reference: %s\n' "$output_dir/reference.wav"
-

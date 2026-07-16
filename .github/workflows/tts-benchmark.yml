@@ -43,4 +43,3 @@ jobs:
           test -s .local/benchmark/qwen-output.wav
           ffprobe -v error -show_entries format=duration,size \
             -of default=noprint_wrappers=1 .local/benchmark/qwen-output.wav
-

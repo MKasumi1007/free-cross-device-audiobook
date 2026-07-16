@@ -52,4 +52,3 @@ if [[ "$status" != "206" || "$bytes" -ne 1024 ]]; then
   printf 'Release asset did not satisfy the expected 206/1024-byte Range response.\n' >&2
   exit 1
 fi
-
