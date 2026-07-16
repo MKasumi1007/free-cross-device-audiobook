@@ -23,6 +23,8 @@ Started: 2026-07-16.
 - Passed the free-tier configuration audit and repository secret scan.
 - Installed GitHub CLI 2.96.0 through Homebrew.
 - Initialized a local Git repository on branch `main`; no public repository has been created.
+- Prepared a manual-only, 45-minute-bounded GitHub Actions CPU TTS experiment using only a synthetic voice.
+- Prepared a public Release sine-wave probe for actual HTTP Range validation after repository creation.
 
 ### Pending
 
