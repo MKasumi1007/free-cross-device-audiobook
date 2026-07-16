@@ -1,0 +1,19 @@
+{
+  "name": "free-cross-device-audiobook",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Free cross-device audiobook PWA with a local Mac TTS agent",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "audit:free": "python3 scripts/free-tier-audit/check_forbidden_config.py",
+    "audit:secrets": "python3 scripts/secret-scan/scan_repo.py",
+    "test": "npm run audit:free && npm run audit:secrets"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
+

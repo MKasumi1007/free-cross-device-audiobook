@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile audit scripts
+        run: python -m compileall -q scripts
+      - name: Reject paid capabilities
+        run: python scripts/free-tier-audit/check_forbidden_config.py
+      - name: Scan tracked files for credentials
+        run: python scripts/secret-scan/scan_repo.py
