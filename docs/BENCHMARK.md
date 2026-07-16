@@ -1,6 +1,6 @@
 # Stage 0 Benchmark
 
-Status: Mac baseline complete; GitHub experiment pending repository creation.
+Status: Mac baseline and Release Range probe complete; bounded GitHub CPU TTS experiment running.
 
 ## Machine
 
@@ -48,7 +48,16 @@ Conservative linear estimate before optimization:
 
 These estimates exclude model load, encoding, retries and thermal throttling. Long-form benchmarks must checkpoint every natural segment and should run only when system memory and power rules allow.
 
-Pending GitHub experiment after repository confirmation:
+## GitHub Release Range Probe
+
+Run date: 2026-07-17.
+
+- Asset: a three-second synthetic 440 Hz M4A file; no voice or book content.
+- Public tag: `stage0-release-probe`.
+- Requested range: bytes 0 through 1,023.
+- Result: HTTP 206 and exactly 1,024 response bytes.
+
+Pending GitHub CPU experiment:
 
 - Install and model-download time.
 - Peak runner memory and disk use.
@@ -60,4 +69,3 @@ Pending GitHub experiment after repository confirmation:
 Default production generator: `MAC_AGENT`.
 
 Reason: it meets the no-payment requirement and GitHub Actions terms do not support treating hosted runners as a general audiobook compute backend.
-

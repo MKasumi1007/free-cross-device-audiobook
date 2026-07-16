@@ -1,8 +1,6 @@
 # Free Cross-Device Audiobook
 
-This repository will contain the v1.3 implementation described in:
-
-`/Users/milandebenben/Documents/Codex/2026-07-16/g-i/免费跨设备听书工具_v1.3_Codex执行规格.md`
+This repository implements the separately maintained v1.3 product specification.
 
 Current status: stage 0 feasibility and safety validation.
 
@@ -26,4 +24,3 @@ python3 scripts/free-tier-audit/check_forbidden_config.py
 ```
 
 The Qwen benchmark uses the existing Python 3.12 environment under the preserved local prototype. Its generated reference and output stay under `.local/`, which is ignored by Git.
-

@@ -22,15 +22,17 @@ Started: 2026-07-16.
 - Validated the WAV as 24 kHz mono PCM with finite samples, -4.76 dBFS peak and -18.36 dBFS RMS.
 - Passed the free-tier configuration audit and repository secret scan.
 - Installed GitHub CLI 2.96.0 through Homebrew.
-- Initialized a local Git repository on branch `main`; no public repository has been created.
+- Created the public `MKasumi1007/free-cross-device-audiobook` repository and pushed branch `main`.
+- Rewrote local commit identity to the GitHub private no-reply address before the first public push.
+- Added a repository-specific read/write deploy key after GitHub OAuth repeatedly returned HTTP 503; the private key remains only on the Mac.
+- Passed the first public GitHub Actions CI run.
 - Prepared a manual-only, 45-minute-bounded GitHub Actions CPU TTS experiment using only a synthetic voice.
 - Prepared a public Release sine-wave probe for actual HTTP Range validation after repository creation.
+- Published the synthetic Release probe and confirmed HTTP 206 with exactly 1,024 requested bytes.
 
 ### Pending
 
-- Complete GitHub authentication without exposing credentials.
-- Ask for the public repository name immediately before creation.
-- Run the GitHub Actions and Release tests after the public repository exists.
+- Finish the bounded GitHub Actions CPU TTS experiment and record its result.
 - Create and inspect a Firebase Spark project after user login.
 
 ### Risks and Decisions
