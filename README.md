@@ -2,7 +2,7 @@
 
 This repository implements the separately maintained v1.3 product specification.
 
-Current status: stage 4 multi-book scheduling, cross-device reading and playback, resume, bookmarks, chapter navigation, mobile controls, and remote-asset recovery are implemented and verified.
+Current status: stage 5 remote-audio inventory, explicit deletion, safe regeneration, quota protection, reconciliation, and restart recovery are implemented and verified.
 
 ## Fixed Decisions
 
@@ -39,6 +39,10 @@ No real book, voice sample, generated audiobook, credential, or model cache belo
 - Frequent local progress saves plus version-fenced cloud sync on key playback events.
 - Browser-readable, SHA-256-verified public text and timeline data on an isolated GitHub branch.
 - Desktop and mobile-width Playwright coverage, including two-book switching and reload resume.
+- An `音频空间` dashboard with per-library, book, chapter, and chunk byte/duration totals.
+- Two-phase remote deletion with generation barriers, idempotent retries, and explicit irreversible confirmation.
+- Regeneration from the deleted chunk's preserved text cursor without deleting books, text, bookmarks, progress, or voice data.
+- Conservative Spark quota pauses, GitHub rate-limit backoff, six-hour local cleanup, and report-only remote reconciliation.
 
 No TTS model is loaded while browsing, importing, logging in, syncing, playing existing audio, or waiting for work. The model starts only for an eligible generation task and unloads after idle time. The current downloaded EPUB remains local-only and cannot be queued for public publication without a separate rights confirmation.
 

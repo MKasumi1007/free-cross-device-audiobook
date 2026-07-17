@@ -39,6 +39,7 @@ TTL deletes, point-in-time recovery, backups, restores, clones, additional datab
 - Not enabled or created: Cloud Storage, Cloud Functions, Firebase Hosting, Analytics, Gemini, phone authentication, paid Google Cloud products.
 - Firestore Security Rules and indexes were deployed only after Emulator tests passed.
 - The app records its own estimated Firestore reads/writes and degrades locally on network or quota errors; it never upgrades the plan.
+- The local safety thresholds stop at 45,000 estimated reads, 18,000 writes, or 18,000 deletes per UTC day, below the documented Spark quotas; the estimate resets the next day.
 
 The Firebase Web config in `config/firebase-public-config.json` is public client configuration. Firebase's official documentation says these Firebase API keys identify the project/app and are not backend authorization; Authentication and Security Rules enforce access. No OAuth token, refresh token, password, cookie, private key, or Firebase CLI credential is stored in the repository.
 
@@ -96,4 +97,5 @@ Source: <https://docs.github.com/en/pages/getting-started-with-github-pages/gith
 - A project-created synthetic Qwen smoke asset was published to a public GitHub Release, downloaded in full, hash/size checked, and fetched with a real HTTP `206` Range response.
 - The production Mac worker uses local CPU/RAM only; its power and memory guard pauses work rather than requesting paid compute.
 - A real Chrome run fetched and decompressed project-created text and timeline fixtures from `book-assets`, then played the synthetic Release M4A while the Mac Agent was not involved.
-- The Firebase project still uses only Spark Authentication and Firestore. No Storage, Functions, Hosting, Billing, Blaze, or payment method was added for stage 4.
+- The Firebase project still uses only Spark Authentication and Firestore. No Storage, Functions, Hosting, Billing, Blaze, or payment method was added for stage 5.
+- Stage 5 deletion uses the existing Mac Agent and GitHub APIs. Rate limits pause with exponential backoff; reconciliation reports orphan assets but never deletes them automatically.

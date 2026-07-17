@@ -1,7 +1,12 @@
 import type { ParsedBook } from "@audiobook/contracts";
 import { describe, expect, it } from "vitest";
 
-import { generationTaskUpdate, planGenerationRequests, selectNextFiveHours } from "./cloud";
+import {
+  calculateAudioStats,
+  generationTaskUpdate,
+  planGenerationRequests,
+  selectNextFiveHours,
+} from "./cloud";
 
 function longBook(): ParsedBook {
   return {
@@ -69,5 +74,21 @@ describe("five-hour generation queue", () => {
       "book-active",
       inactive,
     )).toEqual({ status: "PAUSED", pause_reason: "INACTIVE_48_HOURS", priority: 100 });
+  });
+});
+
+describe("remote audio inventory", () => {
+  it("counts active bytes without treating deletion history as occupied space", () => {
+    expect(calculateAudioStats([
+      { status: "READY", byte_size: 1_000, duration_seconds: 60 },
+      { status: "DELETING", byte_size: 2_000, duration_seconds: 120 },
+      { status: "DELETED", byte_size: 3_000, duration_seconds: 180 },
+    ])).toEqual({
+      chunks: 2,
+      bytes: 3_000,
+      duration_seconds: 180,
+      deleting: 1,
+      deleted: 1,
+    });
   });
 });

@@ -67,3 +67,14 @@ test("uses the correct responsive controls", async ({ page }, testInfo) => {
     await expect(page.getByRole("button", { name: /添加书籍/ })).toBeVisible();
   }
 });
+
+test("manages audio by chapter with an explicit irreversible confirmation", async ({ page }) => {
+  await page.getByRole("button", { name: "管理已生成音频" }).click();
+  await expect(page.getByRole("heading", { name: "音频空间" })).toBeVisible();
+  await expect(page.getByText("正在占用")).toBeVisible();
+  await page.getByRole("button", { name: "删除本章音频" }).first().click();
+  await expect(page.getByRole("heading", { name: /删除.*公开音频/ })).toBeVisible();
+  await expect(page.getByText(/书籍、正文、书签、进度和你的声音都会保留/)).toBeVisible();
+  await page.getByRole("button", { name: "确认删除音频" }).click();
+  await expect(page.getByText("删除中").first()).toBeVisible();
+});

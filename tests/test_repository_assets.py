@@ -62,3 +62,18 @@ def test_repository_asset_is_verified_reused_and_rollback_safe(
 
     publisher.delete("book-a", first.asset_id)
     assert remote == {}
+
+    remote_path = "books/book-a/timeline-persisted.json.gz"
+    remote[remote_path] = b"persisted timeline"
+    blob_sha = hashlib.sha1(
+        f"blob {len(remote[remote_path])}\0".encode("ascii") + remote[remote_path],
+        usedforsecurity=False,
+    ).hexdigest()
+    asset_id = int(blob_sha[:15], 16)
+    url = (
+        "https://raw.githubusercontent.com/owner/repository/book-assets/"
+        f"{remote_path}"
+    )
+    restarted = GitHubRepositoryAssetPublisher("owner/repository")
+    restarted.delete_persisted(asset_id, url)
+    assert remote == {}

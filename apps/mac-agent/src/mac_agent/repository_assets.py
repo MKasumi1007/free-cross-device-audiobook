@@ -9,6 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from urllib.parse import unquote, urlparse
 
 from .generation import GenerationError, PublishedAsset
 from .release_assets import GitHubReleasePublisher
@@ -48,7 +49,8 @@ class GitHubRepositoryAssetPublisher:
             payload,
         )
         if result.returncode != 0:
-            raise GenerationError(
+            raise self._command_error(
+                result,
                 "GITHUB_DATA_UPLOAD_FAILED",
                 "GitHub 正文或时间轴上传中断，稍后会自动重试。",
             )
@@ -79,10 +81,55 @@ class GitHubRepositoryAssetPublisher:
             payload,
         )
         if result.returncode != 0 and b"HTTP 404" not in result.stderr:
-            raise GenerationError(
-                "GITHUB_ROLLBACK_FAILED",
-                "迟到数据未能自动回滚，需要稍后对账。",
-            )
+            raise self._command_error(result, "GITHUB_ROLLBACK_FAILED", "迟到数据未能自动回滚，需要稍后对账。")
+
+    def delete_persisted(self, asset_id: int, url: str) -> None:
+        remote_path = self._path_from_url(url)
+        metadata = self._metadata(remote_path)
+        if metadata is None:
+            return
+        remote_sha = str(metadata.get("sha") or "")
+        if not remote_sha or int(remote_sha[:15], 16) != asset_id:
+            raise GenerationError("REMOTE_ASSET_MISMATCH", "时间轴标识与远端文件不一致，已停止删除。")
+        result = self._api(
+            "DELETE",
+            f"repos/{self.repository}/contents/{quote(remote_path, safe='/')}",
+            {
+                "message": "Delete audiobook timeline after user confirmation",
+                "sha": remote_sha,
+                "branch": self.BRANCH,
+            },
+        )
+        if result.returncode != 0 and b"HTTP 404" not in result.stderr:
+            raise self._command_error(result, "GITHUB_DELETE_FAILED", "GitHub 时间轴暂时无法删除，稍后会自动重试。")
+        if self._metadata(remote_path) is not None:
+            raise GenerationError("GITHUB_DELETE_VERIFY_FAILED", "远程时间轴仍然存在，稍后会再次核对。")
+
+    def asset_exists(self, asset_id: int, url: str) -> bool:
+        remote_path = self._path_from_url(url)
+        metadata = self._metadata(remote_path)
+        if metadata is None:
+            return False
+        remote_sha = str(metadata.get("sha") or "")
+        return bool(remote_sha) and int(remote_sha[:15], 16) == asset_id
+
+    def list_paths(self, book_id: str) -> list[str]:
+        result = self._api(
+            "GET",
+            f"repos/{self.repository}/git/trees/{self.BRANCH}?recursive=1",
+        )
+        if result.returncode != 0:
+            raise self._command_error(result, "GITHUB_RESPONSE_INVALID", "暂时无法读取远程时间轴清单。")
+        value = self._api_json(result)
+        prefix = f"books/{book_id}/"
+        tree = value.get("tree", [])
+        return [
+            str(item.get("path"))
+            for item in tree
+            if isinstance(item, dict)
+            and item.get("type") == "blob"
+            and str(item.get("path") or "").startswith(prefix)
+        ]
 
     def owns_created_asset(self, asset_id: int) -> bool:
         return asset_id in self._created_paths
@@ -91,6 +138,8 @@ class GitHubRepositoryAssetPublisher:
         branch = self._api("GET", f"repos/{self.repository}/git/ref/heads/{self.BRANCH}")
         if branch.returncode == 0:
             return
+        if GitHubReleasePublisher._is_limited(branch.stderr):
+            raise self._command_error(branch, "GITHUB_BRANCH_FAILED", "无法读取 GitHub 数据分支。")
         repository = self._api_json(self._api("GET", f"repos/{self.repository}"))
         default_branch = str(repository.get("default_branch") or "main")
         source = self._api_json(
@@ -107,7 +156,7 @@ class GitHubRepositoryAssetPublisher:
         if created.returncode != 0:
             raced = self._api("GET", f"repos/{self.repository}/git/ref/heads/{self.BRANCH}")
             if raced.returncode != 0:
-                raise GenerationError("GITHUB_BRANCH_FAILED", "无法创建 GitHub 数据分支。")
+                raise self._command_error(raced, "GITHUB_BRANCH_FAILED", "无法创建 GitHub 数据分支。")
 
     def _metadata(self, remote_path: str) -> dict[str, Any] | None:
         result = self._api(
@@ -117,8 +166,21 @@ class GitHubRepositoryAssetPublisher:
         if result.returncode != 0:
             if b"HTTP 404" in result.stderr:
                 return None
-            raise GenerationError("GITHUB_RESPONSE_INVALID", "无法读取 GitHub 数据资产。")
+            raise self._command_error(result, "GITHUB_RESPONSE_INVALID", "无法读取 GitHub 数据资产。")
         return self._api_json(result)
+
+    def _path_from_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        if parsed.netloc != "raw.githubusercontent.com":
+            raise GenerationError("REMOTE_ASSET_URL_INVALID", "时间轴地址不是受管理的 GitHub 文件。")
+        parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
+        repository_parts = self.repository.split("/", 1)
+        if len(parts) < 5 or parts[:2] != repository_parts or parts[2] != self.BRANCH:
+            raise GenerationError("REMOTE_ASSET_URL_INVALID", "时间轴地址不属于当前项目。")
+        remote_path = "/".join(parts[3:])
+        if not remote_path.startswith("books/"):
+            raise GenerationError("REMOTE_ASSET_URL_INVALID", "时间轴地址超出书籍目录。")
+        return remote_path
 
     def _verify(
         self,
@@ -184,6 +246,11 @@ class GitHubRepositoryAssetPublisher:
     @staticmethod
     def _api_json(result: subprocess.CompletedProcess[bytes]) -> dict[str, Any]:
         if result.returncode != 0:
+            if GitHubReleasePublisher._is_limited(result.stderr):
+                raise GenerationError(
+                    "GITHUB_LIMITED",
+                    "GitHub 暂时限制请求，已自动退避，不会改用付费服务。",
+                )
             raise GenerationError("GITHUB_RESPONSE_INVALID", "GitHub 返回读取错误。")
         try:
             value = json.loads(result.stdout)
@@ -192,6 +259,19 @@ class GitHubRepositoryAssetPublisher:
         if not isinstance(value, dict):
             raise GenerationError("GITHUB_RESPONSE_INVALID", "GitHub 返回了错误的数据格式。")
         return value
+
+    @staticmethod
+    def _command_error(
+        result: subprocess.CompletedProcess[bytes],
+        code: str,
+        message: str,
+    ) -> GenerationError:
+        if GitHubReleasePublisher._is_limited(result.stderr):
+            return GenerationError(
+                "GITHUB_LIMITED",
+                "GitHub 暂时限制请求，已自动退避，不会改用付费服务。",
+            )
+        return GenerationError(code, message)
 
     @staticmethod
     def _hash_file(path: Path) -> str:

@@ -47,6 +47,18 @@ service cloud.firestore {
         && get(taskPath).data.deletion_generation == request.resource.data.deletion_generation;
     }
 
+    function deletionRequestAfter(ownerUid, requestId) {
+      return getAfter(
+        /databases/$(database)/documents/users/$(ownerUid)/audioDeletionRequests/$(requestId)
+      );
+    }
+
+    function deletionTaskAfter(ownerUid, taskId) {
+      return getAfter(
+        /databases/$(database)/documents/users/$(ownerUid)/generationRequests/$(taskId)
+      );
+    }
+
     function ownerUpdateOnly(ownerUid, fields) {
       return isOwner(ownerUid)
         && requestKeepsOwner(ownerUid)
@@ -181,8 +193,8 @@ service cloud.firestore {
         }
 
         match /bookmarks/{bookmarkId} {
-          allow read, create, update, delete: if isOwner(ownerUid)
-            && (request.method == 'delete' || requestKeepsOwner(ownerUid));
+          allow read, delete: if isOwner(ownerUid);
+          allow create, update: if isOwner(ownerUid) && requestKeepsOwner(ownerUid);
         }
 
         match /audioChunks/{chunkId} {
@@ -222,6 +234,61 @@ service cloud.firestore {
               'timeline_sha256', 'voice_version', 'error_code', 'updated_at',
               'completed_at'
             ])
+          ) || (
+            isOwner(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && resource.data.status in ['READY', 'FAILED_RETRYABLE']
+            && request.resource.data.status == 'DELETING'
+            && request.resource.data.deletion_generation == resource.data.deletion_generation + 1
+            && request.resource.data.deletion_request_id is string
+            && request.resource.data.delete_requested_at == request.time
+            && request.resource.data.updated_at == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'deletion_generation', 'deletion_request_id',
+              'delete_requested_at', 'updated_at'
+            ])
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.owner_uid == ownerUid
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.book_id == bookId
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.chunk_id == chunkId
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.task_id == resource.data.task_id
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.status == 'QUEUED'
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.deletion_generation == request.resource.data.deletion_generation
+          ) || (
+            activeWorkerFor(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && resource.data.status == 'DELETING'
+            && request.resource.data.status == 'DELETED'
+            && request.resource.data.task_id == resource.data.task_id
+            && request.resource.data.book_id == resource.data.book_id
+            && request.resource.data.chunk_id == resource.data.chunk_id
+            && request.resource.data.deletion_generation == resource.data.deletion_generation
+            && request.resource.data.asset_id == null
+            && request.resource.data.asset_url == null
+            && request.resource.data.timeline_asset_id == null
+            && request.resource.data.timeline_url == null
+            && request.resource.data.deleted_at == request.time
+            && request.resource.data.updated_at == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'asset_id', 'asset_url', 'timeline_asset_id',
+              'timeline_url', 'deleted_at', 'updated_at'
+            ])
+            && deletionRequestAfter(ownerUid, resource.data.deletion_request_id).data.status == 'DONE'
+            && deletionRequestAfter(ownerUid, resource.data.deletion_request_id).data.lease_owner == request.auth.uid
+            && deletionRequestAfter(ownerUid, resource.data.deletion_request_id).data.deletion_generation == resource.data.deletion_generation
+          ) || (
+            isOwner(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && resource.data.status == 'DELETED'
+            && request.resource.data.status == 'FAILED_RETRYABLE'
+            && request.resource.data.error_code == 'REGENERATION_REQUESTED'
+            && request.resource.data.deletion_generation == resource.data.deletion_generation
+            && request.resource.data.updated_at == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'error_code', 'updated_at'
+            ])
+            && deletionTaskAfter(ownerUid, resource.data.task_id).data.status == 'QUEUED'
+            && deletionTaskAfter(ownerUid, resource.data.task_id).data.deletion_generation == resource.data.deletion_generation
+            && deletionTaskAfter(ownerUid, resource.data.task_id).data.start_segment_id == resource.data.start_segment_id
           );
           allow delete: if false;
         }
@@ -250,7 +317,8 @@ service cloud.firestore {
           && request.resource.data.attempt_id == 0;
         allow update: if (
           ownerUpdateOnly(ownerUid, [
-            'status', 'pause_reason', 'priority', 'deletion_generation', 'updated_at'
+            'status', 'pause_reason', 'priority', 'deletion_generation',
+            'start_segment_id', 'retry_not_before', 'updated_at'
           ]) && request.resource.data.status in ['QUEUED', 'PAUSED', 'CANCELLED']
         ) || (
           activeWorkerFor(ownerUid)
@@ -259,7 +327,7 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'status', 'attempt_id', 'lease_owner', 'lease_token', 'lease_deadline',
               'checkpoint_segment_id', 'checkpoint_order', 'error_code', 'error_message',
-              'pause_reason', 'updated_at'
+              'pause_reason', 'retry_not_before', 'updated_at'
           ])
           && (
             request.resource.data.status != 'PAUSED'
@@ -271,6 +339,93 @@ service cloud.firestore {
           && validWorkerTransition()
           && validWorkerLease()
         );
+        allow delete: if false;
+      }
+
+      match /audioDeletionRequests/{requestId} {
+        allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
+        allow create: if isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.request_id == requestId
+          && request.resource.data.status == 'QUEUED'
+          && request.resource.data.attempt_count == 0
+          && request.resource.data.created_at == request.time
+          && request.resource.data.updated_at == request.time
+          && getAfter(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(request.resource.data.book_id)/audioChunks/$(request.resource.data.chunk_id)
+          ).data.status == 'DELETING'
+          && getAfter(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(request.resource.data.book_id)/audioChunks/$(request.resource.data.chunk_id)
+          ).data.deletion_request_id == requestId
+          && getAfter(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(request.resource.data.book_id)/audioChunks/$(request.resource.data.chunk_id)
+          ).data.deletion_generation == request.resource.data.deletion_generation;
+        allow update: if activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.request_id == requestId
+          && request.resource.data.book_id == resource.data.book_id
+          && request.resource.data.chunk_id == resource.data.chunk_id
+          && request.resource.data.task_id == resource.data.task_id
+          && request.resource.data.deletion_generation == resource.data.deletion_generation
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'attempt_count', 'lease_owner', 'lease_token', 'lease_deadline',
+            'retry_not_before', 'error_code', 'error_message', 'updated_at', 'completed_at'
+          ])
+          && (
+            (
+              resource.data.status in ['QUEUED', 'FAILED_RETRYABLE']
+              && request.resource.data.status == 'PROCESSING'
+              && request.resource.data.attempt_count == resource.data.attempt_count + 1
+              && request.resource.data.lease_owner == request.auth.uid
+              && request.resource.data.lease_token is string
+              && request.resource.data.lease_token.size() >= 24
+              && request.resource.data.lease_deadline > request.time
+            ) || (
+              resource.data.status == 'PROCESSING'
+              && resource.data.lease_deadline <= request.time
+              && request.resource.data.status == 'PROCESSING'
+              && request.resource.data.attempt_count == resource.data.attempt_count + 1
+              && request.resource.data.lease_owner == request.auth.uid
+              && request.resource.data.lease_token is string
+              && request.resource.data.lease_token.size() >= 24
+              && request.resource.data.lease_deadline > request.time
+            ) || (
+              resource.data.status == 'PROCESSING'
+              && resource.data.lease_owner == request.auth.uid
+              && resource.data.lease_token == request.resource.data.lease_token
+              && resource.data.lease_deadline > request.time
+              && request.resource.data.status in ['FAILED_RETRYABLE', 'DONE']
+              && request.resource.data.attempt_count == resource.data.attempt_count
+              && (
+                request.resource.data.status != 'DONE'
+                || (
+                  request.resource.data.completed_at == request.time
+                  && getAfter(
+                    /databases/$(database)/documents/users/$(ownerUid)/books/$(resource.data.book_id)/audioChunks/$(resource.data.chunk_id)
+                  ).data.status == 'DELETED'
+                )
+              )
+            )
+          );
+        allow delete: if false;
+      }
+
+      match /maintenance/{documentId} {
+        allow read: if isOwner(ownerUid);
+        allow create: if activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.updated_at == request.time
+          && request.resource.data.keys().hasOnly([
+            'owner_uid', 'kind', 'missing_assets', 'damaged_assets',
+            'orphan_assets', 'checked_books', 'summary', 'updated_at'
+          ]);
+        allow update: if activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.updated_at == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'owner_uid', 'kind', 'missing_assets', 'damaged_assets',
+            'orphan_assets', 'checked_books', 'summary', 'updated_at'
+          ]);
         allow delete: if false;
       }
     }

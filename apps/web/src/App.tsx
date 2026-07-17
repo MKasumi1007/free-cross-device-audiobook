@@ -2,6 +2,7 @@ import type { Chapter, ParsedBook, TextSegment } from "@audiobook/contracts";
 import type { User } from "firebase/auth";
 import { useEffect, useRef, useState } from "react";
 
+import { AudioManager } from "./AudioManager";
 import {
   chooseBookOnMac,
   chooseVoiceOnMac,
@@ -31,7 +32,7 @@ import {
   type ProgressInput,
 } from "./cloud";
 import { registerCurrentDevice } from "./device";
-import { classifyFirebaseError } from "./firebase-errors";
+import { classifyFirebaseError, type SyncError } from "./firebase-errors";
 import { firebaseIsConfigured } from "./firebase";
 import {
   pairMacAgent,
@@ -54,6 +55,7 @@ import {
   saveProgress,
   type LocalProgress,
 } from "./storage";
+import { cloudSyncIsPaused, cloudSyncPauseMessage } from "./usage";
 
 const DEMO_BOOK_ID = "356fc83a-1b37-5571-bb94-9d168a6a7c2f";
 const E2E_PLAYER_MODE = import.meta.env.DEV
@@ -148,6 +150,7 @@ export function App() {
   const [showPairing, setShowPairing] = useState(false);
   const [showDisconnectMac, setShowDisconnectMac] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
+  const [showAudioManager, setShowAudioManager] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
   const [pairingCode, setPairingCode] = useState("");
@@ -159,6 +162,8 @@ export function App() {
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
+  const [cloudSyncPaused, setCloudSyncPaused] = useState(() => cloudSyncIsPaused());
   const progressQueues = useRef(new Map<string, Promise<void>>());
   const currentProgress = useRef<LocalProgress | null>(null);
   const cloudBooksRef = useRef<CloudBookSummary[]>([]);
@@ -166,6 +171,26 @@ export function App() {
   const firebaseConfigured = firebaseIsConfigured();
 
   useEffect(() => watchAuth(setUser), []);
+
+  useEffect(() => {
+    const updateVisibility = () => setPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+
+  useEffect(() => {
+    const pauseSync = () => {
+      setCloudSyncPaused(true);
+      setNotice(cloudSyncPauseMessage());
+    };
+    window.addEventListener("audiobook-cloud-sync-paused", pauseSync);
+    return () => window.removeEventListener("audiobook-cloud-sync-paused", pauseSync);
+  }, []);
+
+  function handleSyncError(error: SyncError) {
+    if (error.kind === "FREE_QUOTA") setCloudSyncPaused(true);
+    setNotice(error.message);
+  }
 
   useEffect(() => {
     let active = true;
@@ -190,14 +215,15 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || !pageVisible || cloudSyncPaused) {
       setCloudBooks([]);
+      if (cloudSyncPaused) setNotice(cloudSyncPauseMessage());
       return;
     }
     let active = true;
     let unsubscribe: () => void = () => {};
     void loadCachedCloudBooks(user.uid).then((cached) => active && setCloudBooks(cached));
-    void registerCurrentDevice(user.uid).catch((error) => setNotice(classifyFirebaseError(error).message));
+    void registerCurrentDevice(user.uid).catch((error) => handleSyncError(classifyFirebaseError(error)));
     void (async () => {
       for (const book of books) {
         if (book.book_id === DEMO_BOOK_ID || !(await bookMetadataNeedsSync(user.uid, book))) continue;
@@ -209,20 +235,20 @@ export function App() {
       if (!active) return;
       setCloudBooks(items);
       void cacheCloudBooks(user.uid, items);
-    }, (error) => setNotice(error.message));
+    }, handleSyncError);
     return () => {
       active = false;
       unsubscribe();
     };
-  }, [books, user]);
+  }, [books, cloudSyncPaused, pageVisible, user]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || !pageVisible || cloudSyncPaused) {
       setWorkerLinks([]);
       return;
     }
-    return watchMacAgents(user.uid, setWorkerLinks, (error) => setNotice(error.message));
-  }, [user]);
+    return watchMacAgents(user.uid, setWorkerLinks, handleSyncError);
+  }, [cloudSyncPaused, pageVisible, user]);
 
   useEffect(() => {
     if (!canAdd) return;
@@ -263,7 +289,7 @@ export function App() {
       setBookmarks([]);
       return;
     }
-    if (!user || !selectedBook) {
+    if (!user || !selectedBook || !pageVisible || cloudSyncPaused) {
       setAudioChunks([]);
       setBookmarks([]);
       return;
@@ -272,22 +298,22 @@ export function App() {
       user.uid,
       selectedBook.book_id,
       setAudioChunks,
-      (error) => setNotice(error.message),
+      handleSyncError,
     );
     const stopBookmarks = watchBookmarks(
       user.uid,
       selectedBook.book_id,
       setBookmarks,
-      (error) => setNotice(error.message),
+      handleSyncError,
     );
     return () => {
       stopAudio();
       stopBookmarks();
     };
-  }, [selectedBook, user]);
+  }, [cloudSyncPaused, pageVisible, selectedBook, user]);
 
   useEffect(() => {
-    if (!user || !selectedBook || selectedBook.book_id === DEMO_BOOK_ID) return;
+    if (!user || !selectedBook || cloudSyncPaused || selectedBook.book_id === DEMO_BOOK_ID) return;
     const refreshPriority = () => {
       void prioritizeActiveBook(user.uid, selectedBook.book_id, cloudBooksRef.current)
         .catch((error) => setNotice(classifyFirebaseError(error).message));
@@ -295,7 +321,7 @@ export function App() {
     refreshPriority();
     const timer = window.setInterval(refreshPriority, 6 * 60 * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [selectedBook, user]);
+  }, [cloudSyncPaused, selectedBook, user]);
 
   useEffect(() => {
     if (!selectedBook) {
@@ -307,7 +333,7 @@ export function App() {
     void (async () => {
       const local = await loadProgress(selectedBook.book_id);
       let chosen = local;
-      if (user) {
+      if (user && !cloudSyncPaused) {
         try {
           const remote = await loadCloudProgress(user.uid, selectedBook.book_id);
           if (remote && remote.version > (local?.cloud_version || 0)) {
@@ -336,7 +362,7 @@ export function App() {
     return () => {
       active = false;
     };
-  }, [selectedBook, user]);
+  }, [cloudSyncPaused, selectedBook, user]);
 
   useEffect(() => {
     if (!selectedSegmentId) return;
@@ -400,14 +426,14 @@ export function App() {
   }
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || cloudSyncPaused) return;
     const retry = () => {
       void loadPendingProgress().then((items) => items.forEach((item) => queueProgressSync(user.uid, item)));
     };
     retry();
     window.addEventListener("online", retry);
     return () => window.removeEventListener("online", retry);
-  }, [user]);
+  }, [cloudSyncPaused, user]);
 
   async function importBook() {
     setBusy(true);
@@ -663,11 +689,12 @@ export function App() {
           <span><b>听见书页</b><small>边听，边读，记住每一处停留</small></span>
         </button>
         <div className="topbar-actions">
-          <span className={`sync-state ${user ? "is-online" : ""}`}><i /> {user ? "云同步已开启" : "本机书架"}</span>
+          <span className={`sync-state ${user && !cloudSyncPaused ? "is-online" : ""}`}><i /> {cloudSyncPaused ? "免费额度保护中" : user ? "云同步已开启" : "本机书架"}</span>
           {firebaseConfigured && !user && <button className="quiet-button header-button" onClick={() => void logIn()}>登录同步</button>}
           {user && canAdd && !activeMac && <button className="quiet-button header-button" onClick={() => void connectMacAutomatically()}>连接这台 Mac</button>}
           {user && canAdd && activeMac && <button className="quiet-button header-button is-connected" onClick={() => setShowDisconnectMac(true)}>Mac 已连接</button>}
           {canAdd && <button className="quiet-button header-button" onClick={() => setShowVoice(true)}>{voiceStatus?.confirmed ? "声音已设置" : "我的声音"}</button>}
+          {(user || E2E_PLAYER_MODE) && <button className="quiet-button header-button" onClick={() => setShowAudioManager(true)}>音频空间</button>}
           {user && <button className="account-button" onClick={() => void signOutCurrentUser()} title="点击退出登录">{user.photoURL ? <img src={user.photoURL} alt="" /> : "我"}</button>}
           {canAdd && (
             <button className="add-book-button" onClick={() => setShowImport(true)}>
@@ -687,6 +714,11 @@ export function App() {
             <p>{user ? "书架和阅读位置已在设备间同步，书籍正文仍按权利设置安全保存。" : "书和进度会先安全留在这台设备；登录后可在手机继续。"}</p>
           </section>
           {!canAdd && <p className="mobile-add-hint">请在 Mac 上添加新书</p>}
+          {(user || E2E_PLAYER_MODE) && (
+            <button className="shelf-audio-button" onClick={() => setShowAudioManager(true)}>
+              管理已生成音频
+            </button>
+          )}
           <section className="book-grid" aria-label="书架">
             {books.map((book, index) => (
               <button
@@ -734,6 +766,11 @@ export function App() {
                 disabled={busy || !user || !activeMac}
               >
                 生成约 5 小时音频
+              </button>
+            )}
+            {(user || E2E_PLAYER_MODE) && (
+              <button className="manage-audio-button" onClick={() => setShowAudioManager(true)}>
+                管理已生成音频
               </button>
             )}
             {bookmarks.length > 0 && (
@@ -904,6 +941,17 @@ export function App() {
             )}
           </section>
         </div>
+      )}
+
+      {showAudioManager && (user || E2E_PLAYER_MODE) && (
+        <AudioManager
+          ownerUid={user?.uid || "e2e-owner"}
+          books={books}
+          cloudBooks={cloudBooks}
+          initialChunks={E2E_PLAYER_MODE ? books.flatMap(e2eAudioChunks) : undefined}
+          onClose={() => setShowAudioManager(false)}
+          onNotice={setNotice}
+        />
       )}
     </div>
   );

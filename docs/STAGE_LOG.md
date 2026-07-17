@@ -198,3 +198,39 @@ Completed: 2026-07-17.
 ### Next
 
 - Stage 5: retention/deletion controls, quota dashboard, reconciliation, and recovery UX.
+
+## Stage 5: Remote Audio Management and Recovery
+
+Completed: 2026-07-17.
+
+### Completed
+
+- Added a responsive `音频空间` dashboard with aggregate, per-book, per-chapter, and per-chunk byte/duration counts.
+- Added explicit deletion scopes for one chunk, chapter, book, or the full remote-audio library, with an irreversible confirmation that names preserved data.
+- Added two-phase deletion requests: the owner marks a chunk `DELETING` and cancels its generation task; the leased Mac worker removes and verifies both GitHub assets before marking it `DELETED`.
+- Added deletion-generation fencing, expired-lease recovery, idempotent 404 handling, and safe repeated requests so late uploads cannot resurrect deleted audio.
+- Preserved chapter, text cursor, hashes, size, progress, bookmarks, books, and voice data; a deleted chunk can be queued from its original starting segment.
+- Added conservative local Spark usage thresholds, visibility-aware listeners, quota-day pauses, and local-first error messages.
+- Added GitHub 403/429 detection with exponential backoff from five minutes to six hours without paid fallback.
+- Added six-hour local temporary-file cleanup and six-hour report-only reconciliation for missing, damaged, and orphan Release/branch assets. Orphans are never deleted automatically.
+- Kept the downloaded real EPUB `LOCAL_ONLY`; it was not uploaded or used for public audio.
+
+### Verification
+
+- Web: 19 tests passed, including audio-space totals and free-quota pause behavior.
+- Firestore Emulator: 21 tests passed, including atomic two-phase deletion, worker lease enforcement, preserved reading data, and cursor-safe regeneration.
+- Python: 59 tests passed, including verified/idempotent GitHub deletion, persisted timeline deletion after restart, rate-limit classification, expired deletion lease recovery, and report-only reconciliation.
+- Playwright: 8 routine tests passed across desktop Chrome and Pixel 7 emulation, including responsive deletion confirmation; 2 optional real-network tests remained separately gated.
+- Free-tier audit, secret scan, TypeScript, production build, Ruff, strict mypy, and `git diff --check` passed.
+
+### Free Services and Limits
+
+- Firebase remains Spark with no Billing account or payment method. Safety pauses occur below the documented daily quotas and expire the next UTC day.
+- GitHub Pages, the public `book-assets` branch, public Releases, and standard public-repository Actions remain the only remote services.
+- Deletion and reconciliation run on the existing Mac Agent without loading Qwen. No cloud GPU, paid storage, Functions, Hosting, or background paid service was introduced.
+- Public copies already downloaded by third parties cannot be revoked even after the project assets are deleted.
+
+### Residual Verification
+
+- A physical iPhone Safari playback and home-screen-install check remains a real-device gate.
+- Actual user-owned public audio should be deleted only through the explicit UI. Automated destructive verification uses disposable project-created synthetic assets only.

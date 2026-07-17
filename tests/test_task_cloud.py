@@ -46,6 +46,8 @@ def firestore_value(value: object) -> dict[str, object]:
         return {"nullValue": None}
     if isinstance(value, int):
         return {"integerValue": str(value)}
+    if isinstance(value, datetime):
+        return {"timestampValue": value.astimezone(UTC).isoformat()}
     return {"stringValue": str(value)}
 
 
@@ -266,3 +268,62 @@ def test_book_text_asset_metadata_is_reused_and_recorded(tmp_path: Path) -> None
     body = (transport.requests[-1][3] or b"").decode()
     assert "text_asset_url" in body
     assert "private-id-token" not in body
+
+
+def test_deletion_is_claimed_and_completed_with_metadata_barrier() -> None:
+    deletion_document = document("users/owner-a/audioDeletionRequests/delete-a", {
+        "owner_uid": "owner-a",
+        "request_id": "delete-a",
+        "book_id": "book-a",
+        "chunk_id": "chunk-a",
+        "task_id": "task-a",
+        "status": "QUEUED",
+        "attempt_count": 0,
+        "deletion_generation": 2,
+        "asset_id": 100,
+        "asset_url": "https://example/audio",
+        "timeline_asset_id": 200,
+        "timeline_url": "https://example/timeline",
+    })
+    transport = FakeTransport([
+        (200, [{"document": deletion_document}]),
+        (200, {"writeResults": [{"updateTime": "2026-07-17T09:01:00Z"}]}),
+        (200, document("users/owner-a/books/book-a/audioChunks/chunk-a", {
+            "status": "DELETING",
+            "deletion_request_id": "delete-a",
+            "deletion_generation": 2,
+        })),
+        (200, {"writeResults": [{}, {}]}),
+    ])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+    pending = tasks.next_deletion("owner-a")
+    assert pending is not None
+    claimed = tasks.claim_deletion(pending)
+    assert claimed.status == "PROCESSING"
+    assert claimed.attempt_count == 1
+    tasks.complete_deletion(claimed)
+    body = (transport.requests[-1][3] or b"").decode()
+    assert '"status":{"stringValue":"DONE"}' in body
+    assert '"asset_id":{"nullValue":null}' in body
+    assert "private-id-token" not in body
+
+
+def test_expired_deletion_lease_is_recovered_after_restart() -> None:
+    expired = datetime.now(UTC) - timedelta(minutes=1)
+    transport = FakeTransport([
+        (200, []),
+        (200, [{"document": document("users/owner-a/audioDeletionRequests/delete-a", {
+            "request_id": "delete-a",
+            "book_id": "book-a",
+            "chunk_id": "chunk-a",
+            "task_id": "task-a",
+            "status": "PROCESSING",
+            "attempt_count": 1,
+            "deletion_generation": 2,
+            "lease_deadline": expired,
+        })}]),
+    ])
+    recovered = FirestoreWorkerTasks(make_client(transport)).next_deletion("owner-a")
+    assert recovered is not None
+    assert recovered.request_id == "delete-a"
+    assert recovered.lease_deadline == expired

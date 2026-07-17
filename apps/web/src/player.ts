@@ -79,6 +79,7 @@ export async function loadChunkTimeline(
   chunk: AudioChunk,
   signal?: AbortSignal,
 ): Promise<ChunkTimeline> {
+  if (!chunk.timeline_url) throw new Error("TIMELINE_MISSING");
   const timeline = await fetchVerifiedGzipJson(
     chunk.timeline_url,
     chunk.timeline_sha256,

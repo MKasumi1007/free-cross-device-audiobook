@@ -5,6 +5,7 @@ import subprocess
 from hashlib import sha256
 from pathlib import Path
 
+from mac_agent.generation import GenerationError
 from mac_agent.release_assets import GitHubReleasePublisher
 
 
@@ -43,3 +44,26 @@ def test_real_gh_asset_shape_from_stage_zero_is_parseable() -> None:
       "url":"https://github.com/MKasumi1007/free-cross-device-audiobook/releases/download/stage0-release-probe/public-domain-sine-probe.m4a"
     }""")
     assert int(payload["apiUrl"].rsplit("/", 1)[-1]) == 479719693
+
+
+def test_release_delete_is_idempotent_and_verified(monkeypatch: object) -> None:
+    commands: list[list[str]] = []
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if "--method" in command:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 1, "", "HTTP 404: Not Found")
+
+    monkeypatch.setattr(GitHubReleasePublisher, "_run", staticmethod(run))  # type: ignore[attr-defined]
+    GitHubReleasePublisher("owner/repository").delete_verified(123)
+    assert len(commands) == 2
+    assert commands[0][commands[0].index("--method") + 1] == "DELETE"
+
+
+def test_github_rate_limit_uses_free_backoff_error() -> None:
+    result = subprocess.CompletedProcess([], 1, "", "HTTP 429 secondary rate limit")
+    error = GitHubReleasePublisher._command_error(result, "FAILED", "failed")
+    assert isinstance(error, GenerationError)
+    assert error.code == "GITHUB_LIMITED"
+    assert "付费" in str(error)

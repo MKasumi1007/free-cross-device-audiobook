@@ -20,7 +20,7 @@ Install or repair the background Agent:
 .venv/bin/audiobook-install-agent
 ```
 
-The installer copies the executable runtime and public Firebase configuration under `~/Library/Application Support/听见书页/`, writes a private LaunchAgent property list, and starts it. It does not copy books, voice samples, credentials, or generated audio into the repository.
+When run from the project directory, the installer updates the existing private runtime and public Firebase configuration under `~/Library/Application Support/听见书页/`, writes a private LaunchAgent property list, and starts it. It does not copy books, voice samples, credentials, or generated audio into the repository.
 
 Start the web development server in another process:
 
@@ -56,6 +56,18 @@ Normal listening flow:
 4. Position is saved locally during playback and synced on pause, chapter jump, chunk completion, and other key events.
 5. Opening another book gives it generation priority. A queued book not opened for 48 hours pauses automatically and resumes when reopened.
 6. If an asset is missing or damaged, use `重新准备`; the request waits safely until the Mac Agent can repair it.
+
+Normal audio-space flow:
+
+1. Open `音频空间` in the top bar, or open a book and click `管理已生成音频`.
+2. Review the total occupied bytes and duration, then select all books or one book.
+3. Delete one chunk, one chapter, one book, or all generated audio. A final dialog states the exact scope and size before anything is queued.
+4. The Mac Agent deletes the public Release audio and public timeline, verifies both are absent, then changes the row from `删除中` to `已删除`. The voice model is not loaded for this work.
+5. Books, chapter text, bookmarks, reading progress, voice samples, hashes, sizes, and the original text cursor remain untouched.
+6. Click `从原位置重新生成` later to recreate only that chunk from its preserved starting paragraph.
+7. Repeated deletion requests are idempotent. A stale upload cannot cross the deletion-generation barrier and restore deleted audio.
+
+If the conservative daily Spark estimate is reached, or Firebase reports quota exhaustion, cloud listeners pause for the rest of the UTC day. Local reading and progress continue, and sync automatically becomes eligible again the next day. GitHub 403/429 limits use delayed retries and never trigger a paid upgrade.
 
 The anonymous Agent refresh token is stored only in macOS Keychain. Real books, voice samples, parsed text, generated audio, OAuth tokens, cookies, and account credentials must never be added to Git.
 

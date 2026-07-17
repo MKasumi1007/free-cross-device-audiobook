@@ -16,7 +16,7 @@ import {
 import { getDeviceId } from "./device";
 import { getFirebaseServices } from "./firebase";
 import { classifyFirebaseError, type SyncError } from "./firebase-errors";
-import { recordEstimatedUsage } from "./usage";
+import { cloudSyncIsPaused, cloudSyncPauseMessage, recordEstimatedUsage } from "./usage";
 import { fetchVerifiedGzipJson } from "./remote-asset";
 
 export interface CloudBookSummary {
@@ -48,16 +48,32 @@ export interface AudioChunk {
   start_segment_id: string;
   end_segment_id: string;
   duration_seconds: number;
-  asset_id: number;
-  asset_url: string;
+  asset_id: number | null;
+  asset_url: string | null;
   sha256: string;
   byte_size: number;
-  timeline_asset_id: number;
-  timeline_url: string;
+  timeline_asset_id: number | null;
+  timeline_url: string | null;
   timeline_sha256: string;
   voice_version: string;
   deletion_generation: number;
+  deletion_request_id?: string;
+  delete_requested_at?: unknown;
+  deleted_at?: unknown;
   completed_at?: unknown;
+}
+
+export interface AudioInventoryItem extends AudioChunk {
+  book_title: string;
+  chapter_title: string;
+}
+
+export interface AudioStats {
+  chunks: number;
+  bytes: number;
+  duration_seconds: number;
+  deleting: number;
+  deleted: number;
 }
 
 export interface CloudBookmark {
@@ -91,9 +107,55 @@ export interface ProgressSyncResult {
 }
 
 function requireServices() {
+  if (cloudSyncIsPaused()) {
+    const error = new Error(cloudSyncPauseMessage()) as Error & { code?: string };
+    error.code = "resource-exhausted-local-safety-pause";
+    throw error;
+  }
   const services = getFirebaseServices();
   if (!services) throw new Error("Firebase 尚未配置。");
   return services;
+}
+
+export function calculateAudioStats(chunks: readonly Pick<
+  AudioChunk,
+  "status" | "byte_size" | "duration_seconds"
+>[]): AudioStats {
+  return chunks.reduce<AudioStats>((stats, chunk) => {
+    if (chunk.status === "DELETED") {
+      stats.deleted += 1;
+      return stats;
+    }
+    stats.chunks += 1;
+    stats.bytes += Number(chunk.byte_size || 0);
+    stats.duration_seconds += Number(chunk.duration_seconds || 0);
+    if (chunk.status === "DELETING") stats.deleting += 1;
+    return stats;
+  }, { chunks: 0, bytes: 0, duration_seconds: 0, deleting: 0, deleted: 0 });
+}
+
+export async function loadAudioInventory(
+  ownerUid: string,
+  books: readonly CloudBookSummary[],
+): Promise<AudioInventoryItem[]> {
+  const { db } = requireServices();
+  const inventory: AudioInventoryItem[] = [];
+  for (const book of books) {
+    const snapshot = await getDocs(collection(
+      db,
+      `users/${ownerUid}/books/${book.book_id}/audioChunks`,
+    ));
+    recordEstimatedUsage({ reads: snapshot.size });
+    for (const item of snapshot.docs) {
+      const chunk = item.data() as AudioChunk;
+      inventory.push({
+        ...chunk,
+        book_title: book.title,
+        chapter_title: chunk.chapter_id,
+      });
+    }
+  }
+  return inventory;
 }
 
 export async function syncBookMetadata(ownerUid: string, book: ParsedBook): Promise<void> {
@@ -371,6 +433,113 @@ export async function requestAudioRepair(ownerUid: string, chunk: AudioChunk): P
     });
   });
   recordEstimatedUsage({ reads: 2, writes: 2 });
+}
+
+export function audioChunkCanBeDeleted(chunk: AudioChunk): boolean {
+  return chunk.status === "READY" || chunk.status === "FAILED_RETRYABLE";
+}
+
+export async function requestAudioDeletion(
+  ownerUid: string,
+  chunks: readonly AudioChunk[],
+): Promise<number> {
+  const { db } = requireServices();
+  let queued = 0;
+  for (const chunk of chunks) {
+    if (cloudSyncIsPaused()) throw new Error(cloudSyncPauseMessage());
+    const requestId = crypto.randomUUID();
+    const chunkReference = doc(
+      db,
+      `users/${ownerUid}/books/${chunk.book_id}/audioChunks/${chunk.chunk_id}`,
+    );
+    const taskReference = doc(db, `users/${ownerUid}/generationRequests/${chunk.task_id}`);
+    const requestReference = doc(db, `users/${ownerUid}/audioDeletionRequests/${requestId}`);
+    const created = await runTransaction(db, async (transaction) => {
+      const [chunkSnapshot, taskSnapshot] = await Promise.all([
+        transaction.get(chunkReference),
+        transaction.get(taskReference),
+      ]);
+      if (!chunkSnapshot.exists()) return false;
+      const current = chunkSnapshot.data() as AudioChunk;
+      if (!audioChunkCanBeDeleted(current)) return false;
+      const deletionGeneration = Number(current.deletion_generation || 0) + 1;
+      transaction.update(chunkReference, {
+        status: "DELETING",
+        deletion_generation: deletionGeneration,
+        deletion_request_id: requestId,
+        delete_requested_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      });
+      if (taskSnapshot.exists()) {
+        transaction.update(taskReference, {
+          status: "CANCELLED",
+          pause_reason: null,
+          deletion_generation: deletionGeneration,
+          updated_at: serverTimestamp(),
+        });
+      }
+      transaction.set(requestReference, {
+        owner_uid: ownerUid,
+        request_id: requestId,
+        book_id: current.book_id,
+        chunk_id: current.chunk_id,
+        task_id: current.task_id,
+        asset_id: current.asset_id,
+        asset_url: current.asset_url,
+        timeline_asset_id: current.timeline_asset_id,
+        timeline_url: current.timeline_url,
+        deletion_generation: deletionGeneration,
+        status: "QUEUED",
+        attempt_count: 0,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      });
+      return true;
+    });
+    recordEstimatedUsage({ reads: 2, writes: created ? 3 : 0 });
+    if (created) queued += 1;
+  }
+  return queued;
+}
+
+export async function requestAudioRegeneration(
+  ownerUid: string,
+  chunk: AudioChunk,
+): Promise<boolean> {
+  const { db } = requireServices();
+  const chunkReference = doc(
+    db,
+    `users/${ownerUid}/books/${chunk.book_id}/audioChunks/${chunk.chunk_id}`,
+  );
+  const taskReference = doc(db, `users/${ownerUid}/generationRequests/${chunk.task_id}`);
+  const queued = await runTransaction(db, async (transaction) => {
+    const [chunkSnapshot, taskSnapshot] = await Promise.all([
+      transaction.get(chunkReference),
+      transaction.get(taskReference),
+    ]);
+    if (!chunkSnapshot.exists() || !taskSnapshot.exists()) {
+      throw new Error("这段音频缺少原始任务记录，暂时不能重新生成。");
+    }
+    const current = chunkSnapshot.data() as AudioChunk;
+    if (current.status !== "DELETED") return false;
+    transaction.update(chunkReference, {
+      status: "FAILED_RETRYABLE",
+      error_code: "REGENERATION_REQUESTED",
+      updated_at: serverTimestamp(),
+    });
+    transaction.update(taskReference, {
+      status: "QUEUED",
+      pause_reason: null,
+      priority: 300,
+      deletion_generation: current.deletion_generation,
+      start_segment_id: current.start_segment_id,
+      retry_not_before: null,
+      updated_at: serverTimestamp(),
+    });
+    return true;
+  });
+  recordEstimatedUsage({ reads: 2, writes: queued ? 2 : 0 });
+  return queued;
 }
 
 export interface PlannedRequest {

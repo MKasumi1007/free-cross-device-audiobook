@@ -28,7 +28,42 @@ class CloudTask:
     lease_owner: str = ""
     lease_token: str = ""
     lease_deadline: datetime | None = None
+    retry_not_before: datetime | None = None
     update_time: str = ""
+
+
+@dataclass(frozen=True)
+class CloudDeletion:
+    owner_uid: str
+    request_id: str
+    book_id: str
+    chunk_id: str
+    task_id: str
+    status: str
+    attempt_count: int
+    deletion_generation: int
+    asset_id: int | None
+    asset_url: str
+    timeline_asset_id: int | None
+    timeline_url: str
+    lease_owner: str = ""
+    lease_token: str = ""
+    lease_deadline: datetime | None = None
+    retry_not_before: datetime | None = None
+    update_time: str = ""
+
+
+@dataclass(frozen=True)
+class RemoteAudioRecord:
+    owner_uid: str
+    book_id: str
+    chunk_id: str
+    status: str
+    asset_id: int | None
+    asset_url: str
+    byte_size: int
+    timeline_asset_id: int | None
+    timeline_url: str
 
 
 class FirestoreWorkerTasks:
@@ -91,7 +126,10 @@ class FirestoreWorkerTasks:
         claimable = [
             task
             for task in tasks
-            if task.status in {"QUEUED", "FAILED_RETRYABLE", "PAUSED"}
+            if (
+                task.status in {"QUEUED", "FAILED_RETRYABLE", "PAUSED"}
+                and (task.retry_not_before is None or task.retry_not_before <= now)
+            )
             or (
                 task.status in {"LEASED", "GENERATING", "ENCODING", "UPLOADING"}
                 and task.lease_deadline is not None
@@ -99,6 +137,22 @@ class FirestoreWorkerTasks:
             )
         ]
         claimable.sort(key=lambda task: (-task.priority, task.task_id))
+        return claimable[0] if claimable else None
+
+    def next_deletion(self, owner_uid: str) -> CloudDeletion | None:
+        requests = self._query_deletions_by_status(owner_uid, ["QUEUED", "FAILED_RETRYABLE"])
+        now = datetime.now(UTC)
+        claimable = [
+            item for item in requests
+            if item.retry_not_before is None or item.retry_not_before <= now
+        ]
+        if not claimable:
+            active = self._query_deletions_by_status(owner_uid, ["PROCESSING"])
+            claimable = [
+                item for item in active
+                if item.lease_deadline is not None and item.lease_deadline <= now
+            ]
+        claimable.sort(key=lambda item: item.request_id)
         return claimable[0] if claimable else None
 
     def claim(self, task: CloudTask) -> CloudTask:
@@ -129,6 +183,117 @@ class FirestoreWorkerTasks:
                 "pause_reason": "",
                 "update_time": update_time,
             }
+        )
+
+    def claim_deletion(self, deletion: CloudDeletion) -> CloudDeletion:
+        identity = self.client.authenticate()
+        lease_token = secrets.token_urlsafe(32)
+        deadline = datetime.now(UTC) + timedelta(seconds=self.LEASE_SECONDS)
+        changes = {
+            "status": "PROCESSING",
+            "attempt_count": deletion.attempt_count + 1,
+            "lease_owner": identity.local_id,
+            "lease_token": lease_token,
+            "lease_deadline": deadline,
+            "retry_not_before": None,
+        }
+        update_time = self._commit_deletion_update(deletion, changes)
+        return replace(deletion, update_time=update_time, **changes)
+
+    def fail_deletion(
+        self,
+        deletion: CloudDeletion,
+        *,
+        error_code: str,
+        message: str,
+        retry_at: datetime,
+    ) -> CloudDeletion:
+        changes = {
+            "status": "FAILED_RETRYABLE",
+            "error_code": error_code,
+            "error_message": message,
+            "retry_not_before": retry_at,
+        }
+        update_time = self._commit_deletion_update(deletion, changes)
+        return replace(
+            deletion,
+            status="FAILED_RETRYABLE",
+            retry_not_before=retry_at,
+            update_time=update_time,
+        )
+
+    def complete_deletion(self, deletion: CloudDeletion) -> None:
+        identity = self.client.authenticate()
+        chunk_path = (
+            f"users/{deletion.owner_uid}/books/{deletion.book_id}"
+            f"/audioChunks/{deletion.chunk_id}"
+        )
+        _, chunk_document = self.client._json_request(
+            "核对待删音频记录",
+            "GET",
+            self._document_url(chunk_path),
+            id_token=identity.id_token,
+            allowed_statuses=frozenset({200, 404}),
+        )
+        if not chunk_document.get("name"):
+            raise GenerationError("AUDIO_METADATA_MISSING", "待删音频记录不存在，已停止处理。")
+        current = self._fields(chunk_document)
+        if current.get("status") not in {"DELETING", "DELETED"}:
+            raise GenerationError("DELETION_BARRIER_CHANGED", "删除代次已经变化，旧请求不会继续执行。")
+        if (
+            current.get("deletion_request_id") != deletion.request_id
+            or int(current.get("deletion_generation") or -1) != deletion.deletion_generation
+        ):
+            raise GenerationError("DELETION_BARRIER_CHANGED", "删除代次已经变化，旧请求不会继续执行。")
+
+        request_path = (
+            f"users/{deletion.owner_uid}/audioDeletionRequests/{deletion.request_id}"
+        )
+        request_write: dict[str, Any] = {
+            "update": {
+                "name": self._document_name(request_path),
+                "fields": {"status": self._string("DONE")},
+            },
+            "updateMask": {"fieldPaths": ["status"]},
+            "updateTransforms": [
+                {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"},
+                {"fieldPath": "completed_at", "setToServerValue": "REQUEST_TIME"},
+            ],
+        }
+        if deletion.update_time:
+            request_write["currentDocument"] = {"updateTime": deletion.update_time}
+        writes: list[dict[str, Any]] = [request_write]
+        if current.get("status") != "DELETED":
+            chunk_write: dict[str, Any] = {
+                "update": {
+                    "name": self._document_name(chunk_path),
+                    "fields": {
+                        "status": self._string("DELETED"),
+                        "asset_id": {"nullValue": None},
+                        "asset_url": {"nullValue": None},
+                        "timeline_asset_id": {"nullValue": None},
+                        "timeline_url": {"nullValue": None},
+                    },
+                },
+                "updateMask": {
+                    "fieldPaths": [
+                        "status", "asset_id", "asset_url",
+                        "timeline_asset_id", "timeline_url",
+                    ]
+                },
+                "updateTransforms": [
+                    {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"},
+                    {"fieldPath": "deleted_at", "setToServerValue": "REQUEST_TIME"},
+                ],
+                "currentDocument": {"updateTime": str(chunk_document["updateTime"])},
+            }
+            writes.append(chunk_write)
+        self.client._json_request(
+            "完成远程音频删除",
+            "POST",
+            self._commit_url(),
+            payload={"writes": writes},
+            id_token=identity.id_token,
         )
 
     def transition(self, task: CloudTask, status: str, **changes: Any) -> CloudTask:
@@ -300,6 +465,79 @@ class FirestoreWorkerTasks:
             id_token=identity.id_token,
         )
 
+    def audio_inventory(self, owner_uid: str) -> list[RemoteAudioRecord]:
+        identity = self.client.authenticate()
+        owner_path = f"users/{quote(owner_uid, safe='')}"
+        payload = {
+            "structuredQuery": {
+                "from": [{"collectionId": "audioChunks", "allDescendants": True}],
+            }
+        }
+        _, value = self.client._json_request(
+            "读取远程音频清单",
+            "POST",
+            f"{self._document_url(owner_path)}:runQuery",
+            payload=payload,
+            id_token=identity.id_token,
+        )
+        rows = value if isinstance(value, list) else []
+        records: list[RemoteAudioRecord] = []
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("document"), dict):
+                continue
+            fields = self._fields(row["document"])
+            records.append(RemoteAudioRecord(
+                owner_uid=owner_uid,
+                book_id=str(fields.get("book_id") or ""),
+                chunk_id=str(fields.get("chunk_id") or ""),
+                status=str(fields.get("status") or ""),
+                asset_id=int(fields["asset_id"]) if fields.get("asset_id") is not None else None,
+                asset_url=str(fields.get("asset_url") or ""),
+                byte_size=int(fields.get("byte_size") or 0),
+                timeline_asset_id=(
+                    int(fields["timeline_asset_id"])
+                    if fields.get("timeline_asset_id") is not None
+                    else None
+                ),
+                timeline_url=str(fields.get("timeline_url") or ""),
+            ))
+        return records
+
+    def record_reconciliation(
+        self,
+        owner_uid: str,
+        *,
+        missing_assets: int,
+        damaged_assets: int,
+        orphan_assets: int,
+        checked_books: int,
+        summary: str,
+    ) -> None:
+        identity = self.client.authenticate()
+        path = f"users/{owner_uid}/maintenance/audio-reconciliation"
+        fields = {
+            "owner_uid": self._string(owner_uid),
+            "kind": self._string("AUDIO_RECONCILIATION"),
+            "missing_assets": self._integer(missing_assets),
+            "damaged_assets": self._integer(damaged_assets),
+            "orphan_assets": self._integer(orphan_assets),
+            "checked_books": self._integer(checked_books),
+            "summary": self._string(summary[:12_000]),
+        }
+        self.client._json_request(
+            "保存音频对账结果",
+            "POST",
+            self._commit_url(),
+            payload={"writes": [{
+                "update": {"name": self._document_name(path), "fields": fields},
+                "updateMask": {"fieldPaths": list(fields)},
+                "updateTransforms": [
+                    {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"}
+                ],
+            }]},
+            id_token=identity.id_token,
+        )
+
     def _commit_update(
         self,
         task: CloudTask,
@@ -325,9 +563,37 @@ class FirestoreWorkerTasks:
         results = value.get("writeResults", [])
         return str(results[0].get("updateTime") or "") if results else ""
 
+    def _commit_deletion_update(
+        self,
+        deletion: CloudDeletion,
+        changes: dict[str, Any],
+    ) -> str:
+        identity = self.client.authenticate()
+        path = f"users/{deletion.owner_uid}/audioDeletionRequests/{deletion.request_id}"
+        fields = {name: self._value(value) for name, value in changes.items()}
+        write: dict[str, Any] = {
+            "update": {"name": self._document_name(path), "fields": fields},
+            "updateMask": {"fieldPaths": list(fields)},
+            "updateTransforms": [
+                {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"}
+            ],
+        }
+        if deletion.update_time:
+            write["currentDocument"] = {"updateTime": deletion.update_time}
+        _, value = self.client._json_request(
+            "更新音频删除任务",
+            "POST",
+            self._commit_url(),
+            payload={"writes": [write]},
+            id_token=identity.id_token,
+        )
+        results = value.get("writeResults", [])
+        return str(results[0].get("updateTime") or "") if results else ""
+
     def _task(self, owner_uid: str, document: dict[str, Any]) -> CloudTask:
         fields = self._fields(document)
         lease_deadline = fields.get("lease_deadline")
+        retry_not_before = fields.get("retry_not_before")
         task_id = str(fields.get("task_id") or str(document.get("name", "")).rsplit("/", 1)[-1])
         return CloudTask(
             owner_uid=owner_uid,
@@ -344,6 +610,42 @@ class FirestoreWorkerTasks:
             lease_owner=str(fields.get("lease_owner") or ""),
             lease_token=str(fields.get("lease_token") or ""),
             lease_deadline=lease_deadline if isinstance(lease_deadline, datetime) else None,
+            retry_not_before=(
+                retry_not_before if isinstance(retry_not_before, datetime) else None
+            ),
+            update_time=str(document.get("updateTime") or ""),
+        )
+
+    def _deletion(self, owner_uid: str, document: dict[str, Any]) -> CloudDeletion:
+        values = self._fields(document)
+        lease_deadline = values.get("lease_deadline")
+        retry_not_before = values.get("retry_not_before")
+        request_id = str(
+            values.get("request_id") or str(document.get("name", "")).rsplit("/", 1)[-1]
+        )
+        return CloudDeletion(
+            owner_uid=owner_uid,
+            request_id=request_id,
+            book_id=str(values.get("book_id") or ""),
+            chunk_id=str(values.get("chunk_id") or ""),
+            task_id=str(values.get("task_id") or ""),
+            status=str(values.get("status") or ""),
+            attempt_count=int(values.get("attempt_count") or 0),
+            deletion_generation=int(values.get("deletion_generation") or 0),
+            asset_id=int(values["asset_id"]) if values.get("asset_id") is not None else None,
+            asset_url=str(values.get("asset_url") or ""),
+            timeline_asset_id=(
+                int(values["timeline_asset_id"])
+                if values.get("timeline_asset_id") is not None
+                else None
+            ),
+            timeline_url=str(values.get("timeline_url") or ""),
+            lease_owner=str(values.get("lease_owner") or ""),
+            lease_token=str(values.get("lease_token") or ""),
+            lease_deadline=lease_deadline if isinstance(lease_deadline, datetime) else None,
+            retry_not_before=(
+                retry_not_before if isinstance(retry_not_before, datetime) else None
+            ),
             update_time=str(document.get("updateTime") or ""),
         )
 
@@ -435,6 +737,43 @@ class FirestoreWorkerTasks:
         rows = value if isinstance(value, list) else []
         return [
             self._task(owner_uid, row["document"])
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("document"), dict)
+        ]
+
+    def _query_deletions_by_status(
+        self,
+        owner_uid: str,
+        statuses: list[str],
+    ) -> list[CloudDeletion]:
+        identity = self.client.authenticate()
+        owner_path = f"users/{quote(owner_uid, safe='')}"
+        payload = {
+            "structuredQuery": {
+                "from": [{"collectionId": "audioDeletionRequests"}],
+                "where": {
+                    "fieldFilter": {
+                        "field": {"fieldPath": "status"},
+                        "op": "IN",
+                        "value": {
+                            "arrayValue": {
+                                "values": [self._string(status) for status in statuses],
+                            }
+                        },
+                    }
+                },
+            }
+        }
+        _, value = self.client._json_request(
+            "查询待删除音频",
+            "POST",
+            f"{self._document_url(owner_path)}:runQuery",
+            payload=payload,
+            id_token=identity.id_token,
+        )
+        rows = value if isinstance(value, list) else []
+        return [
+            self._deletion(owner_uid, row["document"])
             for row in rows
             if isinstance(row, dict) and isinstance(row.get("document"), dict)
         ]

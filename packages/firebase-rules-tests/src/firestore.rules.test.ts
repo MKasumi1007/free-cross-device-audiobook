@@ -463,6 +463,145 @@ describe("worker permissions", () => {
       completed_at: serverTimestamp(),
     }));
   });
+
+  it("deletes remote audio in two phases while preserving reading data", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    await seed("users/owner-a/books/book-a", bookData("owner-a"));
+    await seed("users/owner-a/books/book-a/chapters/chapter-a", {
+      owner_uid: "owner-a", book_id: "book-a", chapter_id: "chapter-a", title: "第一章",
+    });
+    await seed("users/owner-a/books/book-a/bookmarks/mark-a", {
+      owner_uid: "owner-a", book_id: "book-a", bookmark_id: "mark-a", segment_id: "segment-a",
+    });
+    await seed("users/owner-a/progress/book-a", {
+      owner_uid: "owner-a", book_id: "book-a", version: 1, segment_id: "segment-a",
+    });
+    await seed("users/owner-a/generationRequests/task-a", {
+      ...taskData("owner-a"), status: "READY", start_segment_id: "segment-a",
+    });
+    const chunkPath = "users/owner-a/books/book-a/audioChunks/chunk-a";
+    await seed(chunkPath, {
+      owner_uid: "owner-a",
+      task_id: "task-a",
+      book_id: "book-a",
+      chunk_id: "chunk-a",
+      chapter_id: "chapter-a",
+      status: "READY",
+      start_segment_id: "segment-a",
+      end_segment_id: "segment-b",
+      duration_seconds: 600,
+      asset_id: 101,
+      asset_url: "https://example.test/audio.m4a",
+      byte_size: 1000,
+      sha256: "a".repeat(64),
+      timeline_asset_id: 202,
+      timeline_url: "https://raw.githubusercontent.com/owner/repo/book-assets/books/book-a/timeline.json.gz",
+      timeline_sha256: "b".repeat(64),
+      voice_version: "voice-a",
+      deletion_generation: 0,
+    });
+
+    const requestId = "delete-a";
+    const owner = ownerDb();
+    const requestPath = `users/owner-a/audioDeletionRequests/${requestId}`;
+    const deleteBatch = writeBatch(owner);
+    deleteBatch.update(doc(owner, chunkPath), {
+      status: "DELETING",
+      deletion_generation: 1,
+      deletion_request_id: requestId,
+      delete_requested_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    deleteBatch.update(doc(owner, "users/owner-a/generationRequests/task-a"), {
+      status: "CANCELLED", pause_reason: null, deletion_generation: 1, updated_at: serverTimestamp(),
+    });
+    deleteBatch.set(doc(owner, requestPath), {
+      owner_uid: "owner-a",
+      request_id: requestId,
+      book_id: "book-a",
+      chunk_id: "chunk-a",
+      task_id: "task-a",
+      asset_id: 101,
+      asset_url: "https://example.test/audio.m4a",
+      timeline_asset_id: 202,
+      timeline_url: "https://raw.githubusercontent.com/owner/repo/book-assets/books/book-a/timeline.json.gz",
+      deletion_generation: 1,
+      status: "QUEUED",
+      attempt_count: 0,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    await assertSucceeds(deleteBatch.commit());
+
+    const worker = workerDb();
+    await assertSucceeds(updateDoc(doc(worker, requestPath), {
+      status: "PROCESSING",
+      attempt_count: 1,
+      lease_owner: "worker-a",
+      lease_token: "deletion-secure-lease-token-123",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      retry_not_before: null,
+      updated_at: serverTimestamp(),
+    }));
+    const completeBatch = writeBatch(worker);
+    completeBatch.update(doc(worker, requestPath), {
+      status: "DONE", updated_at: serverTimestamp(), completed_at: serverTimestamp(),
+    });
+    completeBatch.update(doc(worker, chunkPath), {
+      status: "DELETED",
+      asset_id: null,
+      asset_url: null,
+      timeline_asset_id: null,
+      timeline_url: null,
+      deleted_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    await assertSucceeds(completeBatch.commit());
+
+    expect((await getDoc(doc(owner, "users/owner-a/books/book-a"))).exists()).toBe(true);
+    expect((await getDoc(doc(owner, "users/owner-a/books/book-a/chapters/chapter-a"))).exists()).toBe(true);
+    expect((await getDoc(doc(owner, "users/owner-a/books/book-a/bookmarks/mark-a"))).exists()).toBe(true);
+    expect((await getDoc(doc(owner, "users/owner-a/progress/book-a"))).data()?.segment_id).toBe("segment-a");
+
+    const regenerateBatch = writeBatch(owner);
+    regenerateBatch.update(doc(owner, chunkPath), {
+      status: "FAILED_RETRYABLE",
+      error_code: "REGENERATION_REQUESTED",
+      updated_at: serverTimestamp(),
+    });
+    regenerateBatch.update(doc(owner, "users/owner-a/generationRequests/task-a"), {
+      status: "QUEUED",
+      pause_reason: null,
+      priority: 300,
+      deletion_generation: 1,
+      start_segment_id: "segment-a",
+      retry_not_before: null,
+      updated_at: serverTimestamp(),
+    });
+    await assertSucceeds(regenerateBatch.commit());
+  });
+
+  it("rejects a deletion completion without the matching worker lease", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a", owner_uid: "owner-a", worker_type: "MAC_AGENT",
+      scopes: ["generation"], revoked_at: null,
+    });
+    const requestPath = "users/owner-a/audioDeletionRequests/delete-a";
+    await seed(requestPath, {
+      owner_uid: "owner-a", request_id: "delete-a", book_id: "book-a", chunk_id: "chunk-a",
+      task_id: "task-a", deletion_generation: 1, status: "PROCESSING", attempt_count: 1,
+      lease_owner: "worker-b", lease_token: "another-worker-secure-token", lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+    });
+    await assertFails(updateDoc(doc(workerDb(), requestPath), {
+      status: "DONE", updated_at: serverTimestamp(), completed_at: serverTimestamp(),
+    }));
+  });
 });
 
 describe("pairing", () => {

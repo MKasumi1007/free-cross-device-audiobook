@@ -10,11 +10,13 @@ from audiobook_core.models import ParsedBook
 from audiobook_core.planning import plan_generation_batch
 
 from .book_assets import BookTextPublisher
+from .cleanup import clean_expired_generation_files
 from .generation import ChunkJob, ChunkPipeline, GenerationError, SegmentGenerator, SegmentJob
 from .library import LocalLibrary
 from .repository_assets import GitHubAudiobookPublisher, GitHubRepositoryAssetPublisher
+from .reconciliation import AudioReconciler
 from .resources import ResourcePolicy
-from .task_cloud import CloudTask, FirestoreWorkerTasks
+from .task_cloud import CloudDeletion, CloudTask, FirestoreWorkerTasks
 from .voice import VoiceProfile, VoiceRegistry
 
 
@@ -97,6 +99,8 @@ class MacGenerationWorker:
         self.last_state = "IDLE"
         self.last_error = ""
         self._last_presence = 0.0
+        self._last_cleanup = float("-inf")
+        self._last_reconciliation = float("-inf")
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -131,13 +135,16 @@ class MacGenerationWorker:
         if time.monotonic() - self._last_presence >= 4 * 60:
             self.tasks.touch_presence()
             self._last_presence = time.monotonic()
+        self._periodic_cleanup()
+        deletion = self.tasks.next_deletion(owner_uid)
+        if deletion is not None:
+            return self._process_deletion(deletion)
+        task = self.tasks.next_task(owner_uid)
+        if task is None:
+            return self._maybe_reconcile(owner_uid)
         profile = self.voices.load()
         if profile is None or not profile.confirmed:
             self.last_state = "WAITING_FOR_VOICE"
-            return False
-        task = self.tasks.next_task(owner_uid)
-        if task is None:
-            self.last_state = "IDLE"
             return False
         if task.status == "PAUSED":
             pause_reason = self.policy.pause_reason()
@@ -184,17 +191,77 @@ class MacGenerationWorker:
         except GenerationError as error:
             current = self.tasks.get(task.owner_uid, task.task_id)
             if current and current.lease_token == task.lease_token:
+                retry_at = datetime.now(UTC) + self._retry_delay(error.code, current.attempt_id)
                 self.tasks.transition(
                     current,
                     "FAILED_RETRYABLE",
                     error_code=error.code,
                     error_message="生成暂时中断，稍后会从检查点继续。",
+                    retry_not_before=retry_at,
                 )
             self.last_state = "FAILED_RETRYABLE"
             self.last_error = str(error)
             return True
         finally:
             fence.stop()
+
+    def _process_deletion(self, deletion: CloudDeletion) -> bool:
+        claimed = self.tasks.claim_deletion(deletion)
+        publisher = GitHubAudiobookPublisher(self.repository)
+        try:
+            if claimed.asset_id is not None:
+                publisher.audio.delete_verified(claimed.asset_id)
+            if claimed.timeline_asset_id is not None and claimed.timeline_url:
+                publisher.data.delete_persisted(
+                    claimed.timeline_asset_id,
+                    claimed.timeline_url,
+                )
+            self.tasks.complete_deletion(claimed)
+            self.last_state = "AUDIO_DELETED"
+            self.last_error = ""
+        except GenerationError as error:
+            retry_at = datetime.now(UTC) + self._retry_delay(error.code, claimed.attempt_count)
+            self.tasks.fail_deletion(
+                claimed,
+                error_code=error.code,
+                message=str(error),
+                retry_at=retry_at,
+            )
+            self.last_state = "DELETE_RETRY"
+            self.last_error = str(error)
+        return True
+
+    def _periodic_cleanup(self) -> None:
+        now = time.monotonic()
+        if now - self._last_cleanup < 6 * 60 * 60:
+            return
+        clean_expired_generation_files(self.work_root)
+        self._last_cleanup = now
+
+    def _maybe_reconcile(self, owner_uid: str) -> bool:
+        now = time.monotonic()
+        if now - self._last_reconciliation < 6 * 60 * 60:
+            self.last_state = "IDLE"
+            return False
+        self._last_reconciliation = now
+        try:
+            report = AudioReconciler(self.tasks, self.repository).run(owner_uid)
+            self.last_state = "RECONCILED"
+            self.last_error = (
+                f"发现 {len(report.missing)} 个缺失、{len(report.damaged)} 个损坏、"
+                f"{len(report.orphan)} 个孤儿资产；未自动删除。"
+            ) if report.missing or report.damaged or report.orphan else ""
+        except GenerationError as error:
+            self.last_state = "RECONCILE_RETRY"
+            self.last_error = str(error)
+        return True
+
+    @staticmethod
+    def _retry_delay(code: str, attempt: int) -> timedelta:
+        base = 5 * 60 if code == "GITHUB_LIMITED" else 30
+        maximum = 6 * 60 * 60 if code == "GITHUB_LIMITED" else 30 * 60
+        seconds = min(maximum, base * (2 ** max(0, min(attempt - 1, 8))))
+        return timedelta(seconds=seconds)
 
     def status(self) -> dict[str, str | bool]:
         return {
