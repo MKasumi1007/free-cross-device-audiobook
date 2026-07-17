@@ -8,7 +8,13 @@ const fixture = path.join(
   "fixtures/synthetic-tone.m4a",
 );
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page }, testInfo) => {
+  if (testInfo.project.name === "desktop-chrome") {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "platform", { configurable: true, value: "MacIntel" });
+      Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: 0 });
+    });
+  }
   await page.route("https://e2e.invalid/**", async (route) => {
     await route.fulfill({
       path: fixture,
