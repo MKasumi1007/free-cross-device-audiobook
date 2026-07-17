@@ -1,0 +1,22 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "generationRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "priority", "order": "DESCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "books",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "archived_at", "order": "ASCENDING" },
+        { "fieldPath": "last_listened_at", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

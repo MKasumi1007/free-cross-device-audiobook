@@ -7,7 +7,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-JSON_FILES = ("package.json", "firebase.json", ".firebaserc")
+JSON_FILES = (
+    "package.json",
+    "firebase.json",
+    ".firebaserc",
+    "config/firebase-public-config.json",
+)
 FORBIDDEN_KEYS = {
     "billingAccount",
     "billing_account",
@@ -67,4 +72,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

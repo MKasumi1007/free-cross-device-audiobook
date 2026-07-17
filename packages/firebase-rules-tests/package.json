@@ -1,0 +1,16 @@
+{
+  "name": "@audiobook/firebase-rules-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "firebase": "^12.16.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

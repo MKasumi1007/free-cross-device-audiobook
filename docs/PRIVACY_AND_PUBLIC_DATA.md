@@ -13,9 +13,15 @@ The required confirmation is:
 
 Downloaded, unknown-origin, or unclear-rights books remain `LOCAL_ONLY`.
 
+## Public Firebase Client Configuration
+
+`config/firebase-public-config.json` contains the Firebase Web app identifier, project identifier, auth domain, and Firebase-provisioned Web API key. Firebase documents this configuration as public by design: it identifies the app but does not authorize access. Firestore Authentication and Security Rules provide authorization.
+
+This exception applies only to the Firebase-provisioned Web client configuration used for Firebase services. It does not make other API keys safe to publish.
+
 ## Never Public
 
-- Passwords, API keys, access tokens, refresh tokens, personal access tokens and secrets.
+- Passwords, secret or non-Firebase API keys, access tokens, refresh tokens, personal access tokens and secrets.
 - Verification codes, private keys, cookies, sessions and macOS Keychain data.
 - Firebase or GitHub account credentials.
 - Real voice samples unless the user separately confirms publication risk.
@@ -28,4 +34,3 @@ The real voice sample stays on the Mac. The Mac Agent uses it locally and upload
 ## Public-Asset Warning
 
 GitHub Release assets in a public repository can be copied by anyone. Deleting an asset cannot revoke third-party downloads or caches.
-

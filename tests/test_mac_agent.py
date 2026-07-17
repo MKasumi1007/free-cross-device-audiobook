@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from mac_agent.app import create_app
 from mac_agent.library import LocalLibrary
+from mac_agent.pairing import PairingCode
 
 
 class FakePicker:
@@ -16,6 +17,20 @@ class FakePicker:
     def choose(self) -> Path | None:
         self.calls += 1
         return self.path
+
+
+class FakePairing:
+    configured = True
+
+    def __init__(self) -> None:
+        self.starts = 0
+
+    def start(self) -> PairingCode:
+        self.starts += 1
+        return PairingCode(code="314159")
+
+    def is_linked(self) -> bool:
+        return True
 
 
 ORIGIN = "http://127.0.0.1:5173"
@@ -103,3 +118,20 @@ def test_bad_encoding_returns_chinese_reason(tmp_path: Path) -> None:
     assert response.status_code == 422
     assert response.json()["code"] == "BAD_ENCODING"
     assert "编码" in response.json()["error"]
+
+
+def test_pairing_uses_one_time_csrf_and_never_returns_a_token(tmp_path: Path) -> None:
+    pairing = FakePairing()
+    library = LocalLibrary(tmp_path / "library", FakePicker(None))
+    client = TestClient(create_app(library=library, pairing=pairing))
+    headers = {"Origin": ORIGIN, "X-Audiobook-CSRF": issue_token(client)}
+
+    response = client.post("/v1/pairing/start", headers=headers, json={})
+    assert response.status_code == 200
+    assert response.json() == {"code": "314159", "expires_in": 540}
+    assert "token" not in response.text.lower()
+    assert pairing.starts == 1
+
+    assert client.post("/v1/pairing/start", headers=headers, json={}).status_code == 403
+    status = client.get("/v1/pairing/status", headers={"Origin": ORIGIN})
+    assert status.json() == {"configured": True, "linked": True}

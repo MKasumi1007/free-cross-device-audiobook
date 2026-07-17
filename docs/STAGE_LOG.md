@@ -82,3 +82,40 @@ Completed: 2026-07-17.
 
 - Stage 2: Firebase Emulator Security Rules, optimistic progress sync, login and Mac Agent pairing.
 - Create a real Firebase project only after emulator tests pass, then verify it remains Spark with no Billing link.
+
+## Stage 2: Login, Sync, and Pairing
+
+Completed: 2026-07-17.
+
+### Completed
+
+- Implemented Firebase Emulator Security Rules and indexes for owner isolation, books, chapters, bookmarks, progress, generation requests, audio metadata, pairing attempts, pairing requests, and worker links.
+- Added optimistic progress versions so stale devices cannot overwrite a newer cloud position.
+- Added Google popup login with redirect fallback, device registration, cloud bookshelf metadata, progress sync, usage estimates, and separate offline/quota/auth messages.
+- Added IndexedDB cloud-book cache, pending-progress recovery, per-account cache isolation, and transaction-completion waits before closing the database.
+- Added anonymous Firebase REST identity for the Mac Agent; its refresh token is stored only in macOS Keychain.
+- Added automatic localhost pairing, six-digit hashed fallback codes, nine-minute expiry, five-attempt/ten-minute rate limiting, one-time binding, revocation, and reconnect after revocation.
+- Hardened pairing so a signed-in user must consume a recent counted attempt before reading a pairing request.
+- Fixed Python certificate discovery using the verified `certifi` CA bundle without disabling TLS verification.
+- Created Firebase project `tingjian-shuye-audiobook`, confirmed Spark `$0`, and enabled only Google/Anonymous Authentication plus Firestore Standard in `eur3`.
+- Kept Billing, Blaze, Storage, Functions, Firebase Hosting, Analytics, Gemini, and phone authentication disabled.
+- Registered the Web app and added localhost plus the planned GitHub Pages domain to Authentication authorized domains.
+- Completed a real Google web login and real automatic Mac pairing; the live Agent reported `configured: true` and `linked: true`.
+- Deployed the tested Firestore Rules and indexes to the Spark project.
+
+### Verification
+
+- Web: 9 tests cover popup/redirect, desktop/mobile UI, connected-device revocation UI, IndexedDB offline recovery, cloud-cache account isolation, and metadata sync markers.
+- Firestore Emulator: 12 tests cover unauthenticated/cross-user/forged-owner access, two-device bookshelf/progress behavior, worker limits, revocation, pairing expiry, brute-force limits, and reconnect.
+- Python: 26 tests cover parsing, planning, Agent boundaries, anonymous REST identity, hashed pairing, active/revoked status, Keychain abstraction, and verified TLS.
+- A real Firebase login and localhost auto-pairing succeeded without terminal tokens or payment setup.
+
+### Free Services and Limits
+
+- Firebase remains Spark and the console shows `免费（每月 0 美元）`; quota exhaustion must pause cloud sync rather than trigger an upgrade.
+- GitHub remains a public repository using standard free Actions only.
+- Mac generation remains the production plan; no cloud GPU, paid storage, Billing account, or payment method was introduced.
+
+### Next
+
+- Stage 3: local voice confirmation, checkpointed Mac generation, ten-minute audio chunks, GitHub Release publication, integrity verification, and idle memory release.

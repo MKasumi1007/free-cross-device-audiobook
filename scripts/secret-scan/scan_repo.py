@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PUBLIC_FIREBASE_CONFIG = ROOT / "config/firebase-public-config.json"
 SKIP_DIRS = {".git", ".local", ".venv", "dist", "node_modules", "private", "runtime-data"}
 SKIP_SUFFIXES = {
     ".aiff",
@@ -50,6 +51,10 @@ def main() -> int:
     for path in candidates():
         text = path.read_text(encoding="utf-8", errors="replace")
         for label, pattern in PATTERNS.items():
+            if label == "Google API key" and path == PUBLIC_FIREBASE_CONFIG:
+                # Firebase Web API keys identify a project but do not authorize access;
+                # Authentication plus Firestore Rules remain the security boundary.
+                continue
             for match in pattern.finditer(text):
                 line = text.count("\n", 0, match.start()) + 1
                 findings.append(f"{path.relative_to(ROOT)}:{line}: {label}")

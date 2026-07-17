@@ -1,0 +1,294 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(ownerUid) {
+      return signedIn() && request.auth.uid == ownerUid;
+    }
+
+    function requestKeepsOwner(ownerUid) {
+      return request.resource.data.owner_uid == ownerUid;
+    }
+
+    function hasRecentPairingAttempt(pairingHash) {
+      let attemptPath = /databases/$(database)/documents/pairingAttempts/$(request.auth.uid);
+      return signedIn()
+        && exists(attemptPath)
+        && get(attemptPath).data.owner_uid == request.auth.uid
+        && get(attemptPath).data.last_pairing_hash == pairingHash
+        && get(attemptPath).data.attempt_count >= 1
+        && get(attemptPath).data.attempt_count <= 5
+        && get(attemptPath).data.updated_at >= request.time - duration.value(1, 'm');
+    }
+
+    function activeWorkerFor(ownerUid) {
+      let linkPath = /databases/$(database)/documents/workerLinks/$(request.auth.uid);
+      return signedIn()
+        && exists(linkPath)
+        && get(linkPath).data.owner_uid == ownerUid
+        && get(linkPath).data.revoked_at == null
+        && get(linkPath).data.scopes.hasAll(['generation']);
+    }
+
+    function ownerUpdateOnly(ownerUid, fields) {
+      return isOwner(ownerUid)
+        && requestKeepsOwner(ownerUid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+
+    function validPairingLink(workerUid) {
+      return signedIn()
+        && request.resource.data.keys().hasOnly([
+          'worker_uid', 'owner_uid', 'worker_type', 'scopes', 'pairing_hash',
+          'revoked_at', 'created_at', 'updated_at', 'last_seen_at'
+        ])
+        && request.resource.data.worker_uid == workerUid
+        && request.resource.data.owner_uid == request.auth.uid
+        && request.resource.data.worker_type == 'MAC_AGENT'
+        && request.resource.data.scopes.hasOnly(['generation'])
+        && request.resource.data.revoked_at == null
+        && request.resource.data.created_at == request.time
+        && request.resource.data.updated_at == request.time
+        && request.resource.data.last_seen_at == null
+        && getAfter(/databases/$(database)/documents/pairingRequests/$(request.resource.data.pairing_hash)).data.worker_uid == workerUid
+        && getAfter(/databases/$(database)/documents/pairingRequests/$(request.resource.data.pairing_hash)).data.owner_uid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/pairingRequests/$(request.resource.data.pairing_hash)).data.used_at == request.time
+        && hasRecentPairingAttempt(request.resource.data.pairing_hash);
+    }
+
+    function validTaskStatus(status) {
+      return status in [
+        'QUEUED', 'LEASED', 'GENERATING', 'ENCODING', 'UPLOADING', 'READY',
+        'PAUSED', 'FAILED_RETRYABLE', 'FAILED_FINAL', 'DELETING', 'DELETED', 'CANCELLED'
+      ];
+    }
+
+    function validWorkerTransition() {
+      return (resource.data.status == 'QUEUED' && request.resource.data.status == 'LEASED')
+        || (resource.data.status == 'FAILED_RETRYABLE' && request.resource.data.status == 'LEASED')
+        || (resource.data.status == 'LEASED' && request.resource.data.status in ['LEASED', 'GENERATING', 'FAILED_RETRYABLE'])
+        || (resource.data.status == 'GENERATING' && request.resource.data.status in ['GENERATING', 'ENCODING', 'FAILED_RETRYABLE'])
+        || (resource.data.status == 'ENCODING' && request.resource.data.status in ['ENCODING', 'UPLOADING', 'FAILED_RETRYABLE'])
+        || (resource.data.status == 'UPLOADING' && request.resource.data.status in ['UPLOADING', 'READY', 'FAILED_RETRYABLE']);
+    }
+
+    function validWorkerLease() {
+      let isClaim = request.resource.data.status == 'LEASED'
+        && resource.data.status in ['QUEUED', 'FAILED_RETRYABLE'];
+      return (
+          isClaim
+          && request.resource.data.attempt_id == resource.data.attempt_id + 1
+          && request.resource.data.lease_owner == request.auth.uid
+          && request.resource.data.lease_token is string
+          && request.resource.data.lease_token.size() >= 24
+          && request.resource.data.lease_deadline > request.time
+        ) || (
+          !isClaim
+          && request.resource.data.attempt_id == resource.data.attempt_id
+          && request.resource.data.lease_owner == resource.data.lease_owner
+          && request.resource.data.lease_owner == request.auth.uid
+          && request.resource.data.lease_token == resource.data.lease_token
+          && resource.data.lease_deadline > request.time
+        );
+    }
+
+    match /users/{ownerUid} {
+      allow read: if isOwner(ownerUid);
+      allow create: if isOwner(ownerUid) && requestKeepsOwner(ownerUid);
+      allow update: if ownerUpdateOnly(ownerUid, ['display_name', 'photo_url', 'updated_at']);
+      allow delete: if false;
+
+      match /devices/{deviceId} {
+        allow read: if isOwner(ownerUid);
+        allow create: if isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.device_id == deviceId;
+        allow update: if ownerUpdateOnly(ownerUid, [
+          'name', 'platform', 'last_seen_at', 'updated_at', 'push_capability'
+        ]) && request.resource.data.device_id == deviceId;
+        allow delete: if isOwner(ownerUid);
+      }
+
+      match /books/{bookId} {
+        allow read: if isOwner(ownerUid);
+        allow create: if isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.book_id == bookId;
+        allow update: if isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.book_id == bookId
+          && request.resource.data.source_sha256 == resource.data.source_sha256;
+        allow delete: if isOwner(ownerUid);
+
+        match /chapters/{chapterId} {
+          allow read: if isOwner(ownerUid);
+          allow create: if isOwner(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && request.resource.data.book_id == bookId
+            && request.resource.data.chapter_id == chapterId;
+          allow update: if isOwner(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && request.resource.data.book_id == bookId
+            && request.resource.data.chapter_id == chapterId;
+          allow delete: if isOwner(ownerUid);
+        }
+
+        match /bookmarks/{bookmarkId} {
+          allow read, create, update, delete: if isOwner(ownerUid)
+            && (request.method == 'delete' || requestKeepsOwner(ownerUid));
+        }
+
+        match /audioChunks/{chunkId} {
+          allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
+          allow create: if activeWorkerFor(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && request.resource.data.book_id == bookId
+            && request.resource.data.chunk_id == chunkId
+            && validTaskStatus(request.resource.data.status);
+          allow update: if activeWorkerFor(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && request.resource.data.book_id == resource.data.book_id
+            && request.resource.data.chunk_id == resource.data.chunk_id
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'attempt_id', 'lease_token', 'duration_seconds', 'asset_id',
+              'asset_url', 'sha256', 'byte_size', 'codec', 'timeline_asset_id',
+              'error_code', 'updated_at', 'completed_at', 'deleted_at'
+            ])
+            && validTaskStatus(request.resource.data.status);
+          allow delete: if false;
+        }
+      }
+
+      match /progress/{bookId} {
+        allow read: if isOwner(ownerUid);
+        allow create: if isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.book_id == bookId
+          && request.resource.data.version == 1;
+        allow update: if isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.book_id == bookId
+          && request.resource.data.version == resource.data.version + 1
+          && request.resource.data.updated_at == request.time;
+        allow delete: if isOwner(ownerUid);
+      }
+
+      match /generationRequests/{taskId} {
+        allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
+        allow create: if isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.task_id == taskId
+          && request.resource.data.status in ['QUEUED', 'PAUSED']
+          && request.resource.data.attempt_id == 0;
+        allow update: if (
+          ownerUpdateOnly(ownerUid, [
+            'status', 'pause_reason', 'priority', 'deletion_generation', 'updated_at'
+          ]) && request.resource.data.status in ['QUEUED', 'PAUSED', 'CANCELLED']
+        ) || (
+          activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.task_id == taskId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'attempt_id', 'lease_owner', 'lease_token', 'lease_deadline',
+            'checkpoint_segment_id', 'checkpoint_order', 'error_code', 'error_message',
+            'updated_at'
+          ])
+          && validWorkerTransition()
+          && validWorkerLease()
+        );
+        allow delete: if false;
+      }
+    }
+
+    match /pairingAttempts/{ownerUid} {
+      allow read: if isOwner(ownerUid);
+      allow create: if isOwner(ownerUid)
+        && request.resource.data.owner_uid == ownerUid
+        && request.resource.data.attempt_count == 1
+        && request.resource.data.last_pairing_hash is string
+        && request.resource.data.last_pairing_hash.size() == 64
+        && request.resource.data.updated_at == request.time;
+      allow update: if isOwner(ownerUid)
+        && request.resource.data.owner_uid == ownerUid
+        && (
+          (
+            request.resource.data.attempt_count == resource.data.attempt_count + 1
+            && request.resource.data.attempt_count <= 5
+          ) || (
+            resource.data.updated_at <= request.time - duration.value(10, 'm')
+            && request.resource.data.attempt_count == 1
+          )
+        )
+        && request.resource.data.last_pairing_hash is string
+        && request.resource.data.last_pairing_hash.size() == 64
+        && request.resource.data.updated_at == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'attempt_count', 'updated_at', 'last_pairing_hash'
+        ]);
+      allow delete: if false;
+    }
+
+    match /pairingRequests/{pairingHash} {
+      allow create: if signedIn()
+        && pairingHash == request.resource.data.code_hash
+        && request.resource.data.worker_uid == request.auth.uid
+        && request.resource.data.owner_uid == null
+        && request.resource.data.used_at == null
+        && request.resource.data.attempt_count == 0
+        && request.resource.data.created_at == request.time
+        && request.resource.data.expires_at > request.time
+        && request.resource.data.expires_at <= request.time + duration.value(10, 'm');
+      allow get: if hasRecentPairingAttempt(pairingHash)
+        && resource.data.expires_at > request.time
+        && resource.data.used_at == null
+        && resource.data.attempt_count < 5;
+      allow list: if false;
+      allow update: if hasRecentPairingAttempt(pairingHash)
+        && resource.data.owner_uid == null
+        && resource.data.used_at == null
+        && resource.data.expires_at > request.time
+        && request.resource.data.code_hash == resource.data.code_hash
+        && request.resource.data.worker_uid == resource.data.worker_uid
+        && request.resource.data.created_at == resource.data.created_at
+        && request.resource.data.expires_at == resource.data.expires_at
+        && request.resource.data.owner_uid == request.auth.uid
+        && request.resource.data.used_at == request.time
+        && request.resource.data.attempt_count == resource.data.attempt_count + 1
+        && request.resource.data.attempt_count <= 5
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'owner_uid', 'used_at', 'attempt_count'
+        ]);
+      allow delete: if signedIn() && resource.data.worker_uid == request.auth.uid;
+    }
+
+    match /workerLinks/{workerUid} {
+      allow get: if signedIn()
+        && (request.auth.uid == workerUid || resource.data.owner_uid == request.auth.uid);
+      allow list: if signedIn() && resource.data.owner_uid == request.auth.uid;
+      allow create: if validPairingLink(workerUid);
+      allow update: if (
+        resource.data.owner_uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['revoked_at', 'updated_at'])
+        && request.resource.data.revoked_at == request.time
+        && request.resource.data.updated_at == request.time
+      ) || (
+        resource.data.owner_uid == request.auth.uid
+        && resource.data.revoked_at != null
+        && validPairingLink(workerUid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'pairing_hash', 'revoked_at', 'created_at', 'updated_at', 'last_seen_at'
+        ])
+      ) || (
+        request.auth.uid == workerUid
+        && resource.data.revoked_at == null
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['last_seen_at'])
+        && request.resource.data.last_seen_at == request.time
+      );
+      allow delete: if false;
+    }
+  }
+}

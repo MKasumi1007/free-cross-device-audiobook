@@ -26,7 +26,7 @@ jobs:
       - name: Scan tracked files for credentials
         run: python scripts/secret-scan/scan_repo.py
 
-  stage-one-quality:
+  project-quality:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -42,8 +42,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Set up Java for Firebase Emulator
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
       - name: Install web dependencies
         run: npm ci
+      - name: Audit production web dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Install Python dependencies
         run: python -m pip install -e '.[dev]'
       - name: Check Python style and types

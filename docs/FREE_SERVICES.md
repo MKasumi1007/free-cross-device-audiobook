@@ -1,12 +1,12 @@
 # Free Services Audit
 
-Last checked: 2026-07-16.
+Last checked: 2026-07-17.
 
 This document records official terms relevant to the hard requirement: no payment method, no usage-based billing, and no automatic charge. Terms must be checked again on the day each resource is created.
 
 ## Decision Summary
 
-| Service | Stage 0 decision | Payment safety | Product role |
+| Service | Current decision | Payment safety | Product role |
 | --- | --- | --- | --- |
 | GitHub Pages | Allowed | Public repository feature; no paid upgrade planned | Static PWA only |
 | GitHub Releases | Allowed with public-data warning | Public release assets; no payment method needed for the planned public repository | Rights-confirmed books and audio |
@@ -29,10 +29,23 @@ Current documented Firestore free quota for one database per project:
 
 TTL deletes, point-in-time recovery, backups, restores, clones, additional databases and paid Google Cloud products are excluded from the free design.
 
+### Created-project verification
+
+- Project: `tingjian-shuye-audiobook` (`Tingjian Shuye Audiobook`).
+- Firebase console visibly reports `结算方案：Spark` and `免费（每月 0 美元）`.
+- No payment method or Cloud Billing account was linked; Blaze was not enabled.
+- Enabled: Authentication with Google and Anonymous providers; Firestore Standard edition in `eur3`.
+- Not enabled or created: Cloud Storage, Cloud Functions, Firebase Hosting, Analytics, Gemini, phone authentication, paid Google Cloud products.
+- Firestore Security Rules and indexes were deployed only after Emulator tests passed.
+- The app records its own estimated Firestore reads/writes and degrades locally on network or quota errors; it never upgrades the plan.
+
+The Firebase Web config in `config/firebase-public-config.json` is public client configuration. Firebase's official documentation says these Firebase API keys identify the project/app and are not backend authorization; Authentication and Security Rules enforce access. No OAuth token, refresh token, password, cookie, private key, or Firebase CLI credential is stored in the repository.
+
 Sources:
 
 - <https://firebase.google.com/docs/projects/billing/firebase-pricing-plans>
 - <https://firebase.google.com/docs/firestore/pricing>
+- <https://firebase.google.com/docs/projects/api-keys>
 
 ## GitHub Actions
 
@@ -72,8 +85,10 @@ Current documented limits include a 1 GiB published-site maximum, a 10-minute de
 
 Source: <https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits>
 
-## Unverified Until Login
+## Current Verification State
 
-- GitHub CLI 2.96.0 is installed, but no GitHub account is authenticated yet; repository settings have not been inspected.
-- No Firebase project exists for this implementation, so Spark/Billing state has not been verified in the console.
-- No cloud resource has been created.
+- GitHub repository `MKasumi1007/free-cross-device-audiobook` is public and uses standard public-repository Actions only.
+- Firebase CLI is authenticated locally; its credentials are outside the repository.
+- Real Google web login and real Mac-to-owner pairing were completed successfully on 2026-07-17.
+- The Agent refresh token was verified present in macOS Keychain without printing its value.
+- Authorized domains currently include localhost development and the planned `mkasumi1007.github.io` Pages domain.

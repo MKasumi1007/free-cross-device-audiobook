@@ -1,0 +1,369 @@
+import {
+  assertFails,
+  assertSucceeds,
+  initializeTestEnvironment,
+  type RulesTestEnvironment,
+} from "@firebase/rules-unit-testing";
+import {
+  Timestamp,
+  doc,
+  getDoc,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  writeBatch,
+} from "firebase/firestore";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+
+const PROJECT_ID = "demo-free-cross-device-audiobook";
+let environment: RulesTestEnvironment;
+
+function ownerDb(uid = "owner-a") {
+  return environment.authenticatedContext(uid, { email: `${uid}@example.test` }).firestore();
+}
+
+function workerDb(uid = "worker-a") {
+  return environment.authenticatedContext(uid, { firebase: { sign_in_provider: "anonymous" } }).firestore();
+}
+
+async function seed(path: string, value: Record<string, unknown>): Promise<void> {
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), path), value);
+  });
+}
+
+function bookData(ownerUid: string, bookId = "book-a") {
+  return {
+    owner_uid: ownerUid,
+    book_id: bookId,
+    title: "测试书",
+    source_sha256: "a".repeat(64),
+    publication_mode: "LOCAL_ONLY",
+  };
+}
+
+function taskData(ownerUid: string, taskId = "task-a") {
+  return {
+    owner_uid: ownerUid,
+    task_id: taskId,
+    book_id: "book-a",
+    status: "QUEUED",
+    priority: 300,
+    attempt_id: 0,
+    deletion_generation: 0,
+    created_at: Timestamp.now(),
+    updated_at: Timestamp.now(),
+  };
+}
+
+beforeAll(async () => {
+  environment = await initializeTestEnvironment({ projectId: PROJECT_ID });
+});
+
+afterEach(async () => {
+  await environment.clearFirestore();
+});
+
+afterAll(async () => {
+  await environment.cleanup();
+});
+
+describe("owner isolation", () => {
+  it("rejects anonymous reads, cross-user reads, and forged owner fields", async () => {
+    const path = "users/owner-a/books/book-a";
+    await seed(path, bookData("owner-a"));
+
+    await assertFails(getDoc(doc(environment.unauthenticatedContext().firestore(), path)));
+    await assertFails(getDoc(doc(ownerDb("owner-b"), path)));
+    await assertFails(setDoc(doc(ownerDb("owner-a"), "users/owner-a/books/book-b"), bookData("owner-b", "book-b")));
+  });
+
+  it("allows an owner to write and read only their own book", async () => {
+    const database = ownerDb();
+    const reference = doc(database, "users/owner-a/books/book-a");
+    await assertSucceeds(setDoc(reference, bookData("owner-a")));
+    await assertSucceeds(getDoc(reference));
+  });
+});
+
+describe("optimistic progress", () => {
+  it("keeps a two-device bookshelf in sync without allowing stale progress", async () => {
+    const deviceA = ownerDb();
+    const deviceB = ownerDb();
+    const bookPath = "users/owner-a/books/book-a";
+    await assertSucceeds(setDoc(doc(deviceA, bookPath), bookData("owner-a")));
+    const bookOnDeviceB = await assertSucceeds(getDoc(doc(deviceB, bookPath)));
+    expect(bookOnDeviceB.data()?.title).toBe("测试书");
+
+    const progressPath = "users/owner-a/progress/book-a";
+    await assertSucceeds(setDoc(doc(deviceA, progressPath), {
+      owner_uid: "owner-a",
+      book_id: "book-a",
+      chapter_id: "chapter-a",
+      segment_id: "segment-a",
+      audio_offset_seconds: 0,
+      device_id: "device-a",
+      version: 1,
+      updated_at: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(doc(deviceB, progressPath), {
+      segment_id: "segment-b",
+      device_id: "device-b",
+      version: 2,
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(doc(deviceA, progressPath), {
+      segment_id: "stale-segment",
+      version: 2,
+      updated_at: serverTimestamp(),
+    }));
+    const current = await assertSucceeds(getDoc(doc(deviceA, progressPath)));
+    expect(current.data()?.segment_id).toBe("segment-b");
+    expect(current.data()?.version).toBe(2);
+  });
+
+  it("accepts the next version and rejects an old device overwrite", async () => {
+    const database = ownerDb();
+    const reference = doc(database, "users/owner-a/progress/book-a");
+    await assertSucceeds(setDoc(reference, {
+      owner_uid: "owner-a",
+      book_id: "book-a",
+      chapter_id: "chapter-a",
+      segment_id: "segment-a",
+      audio_offset_seconds: 0,
+      device_id: "device-a",
+      version: 1,
+      updated_at: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(reference, {
+      segment_id: "segment-b",
+      version: 2,
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(reference, {
+      segment_id: "stale-segment",
+      version: 2,
+      updated_at: serverTimestamp(),
+    }));
+  });
+});
+
+describe("worker permissions", () => {
+  it("allows task lease fields but blocks progress and unrelated task fields", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    const taskPath = "users/owner-a/generationRequests/task-a";
+    await seed(taskPath, taskData("owner-a"));
+    const database = workerDb();
+    const task = doc(database, taskPath);
+
+    await assertSucceeds(getDoc(task));
+    await assertSucceeds(updateDoc(task, {
+      status: "LEASED",
+      attempt_id: 1,
+      lease_owner: "worker-a",
+      lease_token: "a-secure-lease-token-with-24-chars",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(task, { priority: 999 }));
+    await assertFails(setDoc(doc(database, "users/owner-a/progress/book-a"), {
+      owner_uid: "owner-a",
+      book_id: "book-a",
+      version: 1,
+    }));
+  });
+
+  it("denies an already revoked worker", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: Timestamp.now(),
+    });
+    await seed("users/owner-a/generationRequests/task-a", taskData("owner-a"));
+    await assertFails(getDoc(doc(workerDb(), "users/owner-a/generationRequests/task-a")));
+  });
+});
+
+describe("pairing", () => {
+  it("lets an authenticated anonymous worker create a short-lived hashed request", async () => {
+    const database = workerDb();
+    const hash = "b".repeat(64);
+    await assertSucceeds(setDoc(doc(database, `pairingRequests/${hash}`), {
+      code_hash: hash,
+      worker_uid: "worker-a",
+      owner_uid: null,
+      used_at: null,
+      attempt_count: 0,
+      created_at: serverTimestamp(),
+      expires_at: Timestamp.fromMillis(Date.now() + 5 * 60_000),
+    }));
+  });
+
+  it("binds once in one atomic owner batch", async () => {
+    const hash = "c".repeat(64);
+    await seed(`pairingRequests/${hash}`, {
+      code_hash: hash,
+      worker_uid: "worker-a",
+      owner_uid: null,
+      used_at: null,
+      attempt_count: 0,
+      created_at: Timestamp.now(),
+      expires_at: Timestamp.fromMillis(Date.now() + 5 * 60_000),
+    });
+
+    const database = ownerDb();
+    await assertSucceeds(setDoc(doc(database, "pairingAttempts/owner-a"), {
+      owner_uid: "owner-a",
+      attempt_count: 1,
+      last_pairing_hash: hash,
+      updated_at: serverTimestamp(),
+    }));
+    const batch = writeBatch(database);
+    batch.update(doc(database, `pairingRequests/${hash}`), {
+      owner_uid: "owner-a",
+      used_at: serverTimestamp(),
+      attempt_count: 1,
+    });
+    batch.set(doc(database, "workerLinks/worker-a"), {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      pairing_hash: hash,
+      revoked_at: null,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+      last_seen_at: null,
+    });
+    await assertSucceeds(batch.commit());
+  });
+
+  it("requires a recent counted attempt before reading a pairing request", async () => {
+    const hash = "e".repeat(64);
+    await seed(`pairingRequests/${hash}`, {
+      code_hash: hash,
+      worker_uid: "worker-a",
+      owner_uid: null,
+      used_at: null,
+      attempt_count: 0,
+      created_at: Timestamp.now(),
+      expires_at: Timestamp.fromMillis(Date.now() + 5 * 60_000),
+    });
+
+    const database = ownerDb();
+    await assertFails(getDoc(doc(database, `pairingRequests/${hash}`)));
+    await assertSucceeds(setDoc(doc(database, "pairingAttempts/owner-a"), {
+      owner_uid: "owner-a",
+      attempt_count: 1,
+      last_pairing_hash: hash,
+      updated_at: serverTimestamp(),
+    }));
+    await assertSucceeds(getDoc(doc(database, `pairingRequests/${hash}`)));
+  });
+
+  it("rejects expired codes and a sixth pairing attempt", async () => {
+    const expiredHash = "d".repeat(64);
+    await seed(`pairingRequests/${expiredHash}`, {
+      code_hash: expiredHash,
+      worker_uid: "worker-a",
+      owner_uid: null,
+      used_at: null,
+      attempt_count: 0,
+      created_at: Timestamp.fromMillis(Date.now() - 120_000),
+      expires_at: Timestamp.fromMillis(Date.now() - 60_000),
+    });
+    const database = ownerDb();
+    await assertSucceeds(setDoc(doc(database, "pairingAttempts/owner-a"), {
+      owner_uid: "owner-a",
+      attempt_count: 1,
+      last_pairing_hash: expiredHash,
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(getDoc(doc(database, `pairingRequests/${expiredHash}`)));
+
+    await seed("pairingAttempts/owner-a", {
+      owner_uid: "owner-a",
+      attempt_count: 5,
+      last_pairing_hash: expiredHash,
+      updated_at: Timestamp.now(),
+    });
+    await assertFails(updateDoc(doc(database, "pairingAttempts/owner-a"), {
+      attempt_count: 6,
+      last_pairing_hash: "f".repeat(64),
+      updated_at: serverTimestamp(),
+    }));
+  });
+
+  it("allows the five-attempt window to reset after ten minutes", async () => {
+    await seed("pairingAttempts/owner-a", {
+      owner_uid: "owner-a",
+      attempt_count: 5,
+      last_pairing_hash: "a".repeat(64),
+      updated_at: Timestamp.fromMillis(Date.now() - 11 * 60_000),
+    });
+    await assertSucceeds(updateDoc(doc(ownerDb(), "pairingAttempts/owner-a"), {
+      attempt_count: 1,
+      last_pairing_hash: "b".repeat(64),
+      updated_at: serverTimestamp(),
+    }));
+  });
+
+  it("allows an owner to reconnect the same worker after revocation", async () => {
+    const oldHash = "1".repeat(64);
+    const newHash = "2".repeat(64);
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      pairing_hash: oldHash,
+      revoked_at: Timestamp.now(),
+      created_at: Timestamp.now(),
+      updated_at: Timestamp.now(),
+      last_seen_at: null,
+    });
+    await seed(`pairingRequests/${newHash}`, {
+      code_hash: newHash,
+      worker_uid: "worker-a",
+      owner_uid: null,
+      used_at: null,
+      attempt_count: 0,
+      created_at: Timestamp.now(),
+      expires_at: Timestamp.fromMillis(Date.now() + 5 * 60_000),
+    });
+
+    const database = ownerDb();
+    await assertSucceeds(setDoc(doc(database, "pairingAttempts/owner-a"), {
+      owner_uid: "owner-a",
+      attempt_count: 1,
+      last_pairing_hash: newHash,
+      updated_at: serverTimestamp(),
+    }));
+    const batch = writeBatch(database);
+    batch.update(doc(database, `pairingRequests/${newHash}`), {
+      owner_uid: "owner-a",
+      used_at: serverTimestamp(),
+      attempt_count: 1,
+    });
+    batch.set(doc(database, "workerLinks/worker-a"), {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      pairing_hash: newHash,
+      revoked_at: null,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+      last_seen_at: null,
+    });
+    await assertSucceeds(batch.commit());
+  });
+});

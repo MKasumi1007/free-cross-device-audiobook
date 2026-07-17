@@ -54,9 +54,14 @@ body::before {
 .topbar-actions { display: flex; align-items: center; gap: 22px; }
 .sync-state { color: var(--muted); font-size: 13px; }
 .sync-state i { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #71875d; }
+.sync-state.is-online i { box-shadow: 0 0 0 4px rgba(113,135,93,.12); }
 .add-book-button, .primary-button { border: 0; border-radius: 999px; color: #fff9ef; background: var(--cinnabar); box-shadow: 0 8px 20px rgba(164,59,43,.23); cursor: pointer; }
 .add-book-button { padding: 12px 20px; }
 .add-book-button span { margin-right: 5px; font-size: 18px; }
+.header-button { padding: 9px 14px; font-size: 12px; }
+.header-button.is-connected { border-color: #7d9a72; color: #496343; background: #edf3e8; }
+.account-button { display: grid; width: 34px; height: 34px; overflow: hidden; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 50%; color: var(--cinnabar-dark); background: #efe2cf; cursor: pointer; }
+.account-button img { width: 100%; height: 100%; object-fit: cover; }
 
 .notice { position: fixed; top: 96px; left: 50%; z-index: 30; max-width: min(560px, calc(100vw - 32px)); padding: 11px 18px; transform: translateX(-50%); border: 1px solid rgba(164,59,43,.18); border-radius: 999px; background: #fff8eb; box-shadow: 0 10px 30px rgba(57,40,24,.12); color: var(--cinnabar-dark); font-size: 14px; }
 .shelf-page { width: min(1180px, calc(100% - 44px)); margin: 0 auto; padding: 74px 0 80px; }
@@ -72,6 +77,7 @@ body::before {
 .book-card--tone-1 { color: #f7eddd; background: #496b63; }
 .book-card--tone-2 { color: #f9ecdc; background: #a45136; }
 .book-card--tone-3 { color: #f3ead7; background: #303b3f; }
+.book-card--cloud::after { position: absolute; top: 20px; right: 18px; content: "云"; opacity: .32; font-size: 38px; }
 .book-spine { position: absolute; inset: 0 auto 0 0; width: 14px; border-right: 1px solid rgba(0,0,0,.18); background: rgba(255,255,255,.12); }
 .book-format { padding: 5px 8px; border: 1px solid currentColor; border-radius: 3px; opacity: .7; font-family: ui-monospace, monospace; font-size: 10px; letter-spacing: .12em; }
 .book-title { max-width: 9em; margin-top: 34px; font-size: 27px; line-height: 1.28; letter-spacing: .05em; }
@@ -124,12 +130,15 @@ body::before {
 .modal-actions button { padding: 12px 18px; }
 .quiet-button { border: 1px solid var(--line); border-radius: 999px; background: transparent; cursor: pointer; }
 .primary-button:disabled { opacity: .55; }
+.pairing-input { width: 100%; margin: 22px 0 28px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 12px; outline: none; background: rgba(255,255,255,.45); font-family: ui-monospace, monospace; font-size: 24px; letter-spacing: .3em; text-align: center; }
+.pairing-input:focus { border-color: var(--cinnabar); box-shadow: 0 0 0 3px rgba(164,59,43,.08); }
 
 @media (max-width: 767px) {
   .app-shell { padding-bottom: 84px; }
   .topbar { height: 68px; padding: 0 17px; }
   .brand-seal { width: 36px; height: 36px; }
-  .brand small, .sync-state, .add-book-button { display: none !important; }
+  .brand small, .sync-state, .add-book-button, .header-button { display: none !important; }
+  .topbar-actions { gap: 9px; }
   .shelf-page { width: min(100% - 28px, 620px); padding: 48px 0 50px; }
   .shelf-intro { margin-bottom: 36px; padding: 0; }
   .shelf-intro::before { display: none; }
@@ -155,6 +164,7 @@ body::before {
   .player-status span { font-size: 10px; }
   .player-progress, .player-time { display: none; }
   .import-modal { padding: 28px 22px; }
+  .modal-actions { flex-wrap: wrap; }
 }
 
 @media (prefers-reduced-motion: no-preference) {
