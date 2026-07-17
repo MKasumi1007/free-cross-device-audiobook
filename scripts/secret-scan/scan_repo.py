@@ -58,6 +58,7 @@ def main() -> int:
         path.relative_to(ROOT)
         for path in ROOT.rglob("*")
         if path.is_file()
+        and not any(part in SKIP_DIRS for part in path.parts)
         and any(
             token in path.name.lower()
             for token in ("service-account", "firebase-adminsdk", ".p12", ".pem")
@@ -78,4 +79,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

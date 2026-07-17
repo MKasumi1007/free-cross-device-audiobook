@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="听见书页印章">
+  <rect width="512" height="512" rx="112" fill="#a43b2b"/>
+  <path d="M114 124c54-18 105-9 142 25v255c-39-30-87-38-142-20V124Zm284 0c-54-18-105-9-142 25v255c39-30 87-38 142-20V124Z" fill="#f7efdF"/>
+  <path d="M256 149v255" stroke="#d7c9ad" stroke-width="14"/>
+  <path d="M160 194h55M160 244h55M297 194h55M297 244h55" stroke="#a43b2b" stroke-width="16" stroke-linecap="round"/>
+</svg>

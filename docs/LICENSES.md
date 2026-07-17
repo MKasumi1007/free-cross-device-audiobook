@@ -23,13 +23,28 @@ Official source: <https://github.com/QwenLM/Qwen3-TTS>
 - `transformers 4.57.3`: Apache-2.0 according to installed package metadata.
 - FFmpeg is an external runtime; distribution configuration and enabled codecs must be audited before bundling it. v1 should call the user's Homebrew/system FFmpeg rather than redistribute a binary.
 
+## Stage 1 Application Dependencies
+
+Installed package metadata and included license files report permissive licenses:
+
+- Beautiful Soup: MIT.
+- defusedxml: Python Software Foundation license.
+- FastAPI: MIT.
+- Uvicorn: BSD-3-Clause.
+- React and React DOM: MIT.
+- Vite and the React Vite plugin: MIT.
+- Zod: MIT.
+- vite-plugin-pwa: MIT.
+
+Development-only test and lint tools are not bundled into the web application.
+
 ## Fixtures
 
 - No real book or real voice is licensed as a fixture.
+- Stage 1 parser fixtures are short project-authored texts generated at test time.
 - The local system-voice Qwen benchmark is ignored and will not be uploaded.
 - Future committed fixtures require an entry in `tests/fixtures/LICENSES.md` with a source URL and redistribution permission.
 
 ## Project License
 
 The user has approved a public repository but has not selected a project license. Do not silently assign a license before repository creation; preserve all third-party notices regardless of the final choice.
-

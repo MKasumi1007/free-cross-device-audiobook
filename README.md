@@ -2,7 +2,7 @@
 
 This repository implements the separately maintained v1.3 product specification.
 
-Current status: stage 0 feasibility and safety validation.
+Current status: stage 1 local bookshelf and safe parsing complete; stage 2 cloud sync is next.
 
 ## Fixed Decisions
 
@@ -16,11 +16,28 @@ Current status: stage 0 feasibility and safety validation.
 
 No real book, voice sample, generated audiobook, credential, or model cache belongs in Git history.
 
-## Stage 0 Commands
+## Implemented
+
+- Safe EPUB 2/3 and TXT parsing with real chapters and paragraph text.
+- Stable chapter and text-segment IDs across unchanged re-imports.
+- Mac-only native file selection through an origin-restricted loopback Agent.
+- IndexedDB bookshelf and reading position cache.
+- Responsive React PWA: desktop can add books; mobile shows `请在 Mac 上添加新书`.
+- Five-hour generation batches split near natural ten-minute boundaries.
+- Rights remain `LOCAL_ONLY` unless the user explicitly confirms public-distribution rights.
+
+No TTS model is loaded while browsing or importing books. Audio generation and Firebase sync are intentionally not enabled yet.
+
+## Development Commands
 
 ```bash
-python3 scripts/secret-scan/scan_repo.py
-python3 scripts/free-tier-audit/check_forbidden_config.py
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+npm install
+npm test
+npm run build
+npm run dev
+.venv/bin/audiobook-mac-agent
 ```
 
-The Qwen benchmark uses the existing Python 3.12 environment under the preserved local prototype. Its generated reference and output stay under `.local/`, which is ignored by Git.
+The Qwen benchmark uses the preserved local prototype environment. Generated references, parsed real books and runtime output stay under ignored local directories.

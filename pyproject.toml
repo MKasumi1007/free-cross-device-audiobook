@@ -7,14 +7,27 @@ name = "free-cross-device-audiobook"
 version = "0.0.0"
 description = "Local Mac audiobook agent and shared domain services"
 requires-python = ">=3.12,<3.14"
-dependencies = []
+dependencies = [
+  "beautifulsoup4>=4.13,<5",
+  "defusedxml>=0.7,<1",
+  "fastapi>=0.116,<1",
+  "uvicorn>=0.35,<1",
+]
 
 [project.optional-dependencies]
 dev = [
+  "httpx>=0.28,<1",
   "mypy>=1.17,<2",
   "pytest>=8,<9",
   "ruff>=0.12,<1",
+  "types-defusedxml>=0.7,<1",
 ]
+
+[project.scripts]
+audiobook-mac-agent = "mac_agent.main:main"
+
+[tool.setuptools.packages.find]
+where = ["services/audiobook-core/src", "apps/mac-agent/src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -26,4 +39,4 @@ target-version = "py312"
 [tool.mypy]
 python_version = "3.12"
 strict = true
-
+mypy_path = ["services/audiobook-core/src", "apps/mac-agent/src"]

@@ -10,10 +10,14 @@
   "scripts": {
     "audit:free": "python3 scripts/free-tier-audit/check_forbidden_config.py",
     "audit:secrets": "python3 scripts/secret-scan/scan_repo.py",
-    "test": "npm run audit:free && npm run audit:secrets"
+    "build": "npm run build --workspace @audiobook/web",
+    "dev": "npm run dev --workspace @audiobook/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test:python": "bash scripts/test-python.sh",
+    "test:web": "npm run test --workspace @audiobook/web",
+    "test": "npm run audit:free && npm run audit:secrets && npm run typecheck && npm run test:web && npm run test:python"
   },
   "engines": {
     "node": ">=20"
   }
 }
-

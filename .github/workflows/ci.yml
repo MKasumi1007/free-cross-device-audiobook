@@ -25,3 +25,32 @@ jobs:
         run: python scripts/free-tier-audit/check_forbidden_config.py
       - name: Scan tracked files for credentials
         run: python scripts/secret-scan/scan_repo.py
+
+  stage-one-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install web dependencies
+        run: npm ci
+      - name: Install Python dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Check Python style and types
+        run: |
+          ruff check services apps tests
+          mypy services/audiobook-core/src apps/mac-agent/src
+      - name: Run project tests
+        run: npm test
+      - name: Build the PWA
+        run: npm run build

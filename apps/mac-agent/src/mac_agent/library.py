@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import json
+import os
+import secrets
+from pathlib import Path
+from typing import Any
+
+from audiobook_core.models import ParsedBook
+from audiobook_core.parser import parse_book
+
+from .picker import BookPicker
+
+
+class LocalLibrary:
+    def __init__(self, root: Path, picker: BookPicker) -> None:
+        self.root = root
+        self.picker = picker
+
+    def choose_and_import(self, *, import_as_copy: bool, rights_confirmed: bool) -> ParsedBook | None:
+        selected = self.picker.choose()
+        if selected is None:
+            return None
+        duplicate_salt = secrets.token_urlsafe(12) if import_as_copy else ""
+        book = parse_book(
+            selected,
+            rights_confirmed=rights_confirmed,
+            duplicate_salt=duplicate_salt,
+        )
+        existing = self._find_by_source_hash(book.source_sha256)
+        if existing and not import_as_copy:
+            return self._load(existing)
+        self._save(book)
+        return book
+
+    def _find_by_source_hash(self, source_sha256: str) -> Path | None:
+        if not self.root.exists():
+            return None
+        for book_file in self.root.glob("*/book.json"):
+            try:
+                payload = json.loads(book_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if payload.get("source_sha256") == source_sha256:
+                return book_file
+        return None
+
+    @staticmethod
+    def _load(path: Path) -> ParsedBook:
+        from audiobook_core.models import Chapter, PublicationMode, SegmentKind, TextSegment
+
+        payload: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        chapters = []
+        for raw_chapter in payload["chapters"]:
+            segments = tuple(
+                TextSegment(
+                    **{
+                        **segment,
+                        "kind": SegmentKind(segment["kind"]),
+                    }
+                )
+                for segment in raw_chapter["segments"]
+            )
+            chapters.append(Chapter(**{**raw_chapter, "segments": segments}))
+        return ParsedBook(
+            **{
+                **payload,
+                "publication_mode": PublicationMode(payload["publication_mode"]),
+                "chapters": tuple(chapters),
+                "warnings": tuple(payload.get("warnings", [])),
+            }
+        )
+
+    def _save(self, book: ParsedBook) -> None:
+        target_dir = self.root / book.book_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / "book.json"
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(book.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, target)

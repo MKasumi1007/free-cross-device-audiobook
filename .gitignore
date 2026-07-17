@@ -8,6 +8,7 @@
 .pytest_cache/
 .ruff_cache/
 .venv/
+*.egg-info/
 __pycache__/
 coverage/
 dist/
@@ -35,4 +36,3 @@ firebase-debug.log
 models/
 private/
 runtime-data/
-
