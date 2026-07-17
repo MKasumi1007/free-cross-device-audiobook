@@ -198,7 +198,16 @@ class FirestoreWorkerTasks:
             "retry_not_before": None,
         }
         update_time = self._commit_deletion_update(deletion, changes)
-        return replace(deletion, update_time=update_time, **changes)
+        return replace(
+            deletion,
+            status="PROCESSING",
+            attempt_count=deletion.attempt_count + 1,
+            lease_owner=identity.local_id,
+            lease_token=lease_token,
+            lease_deadline=deadline,
+            retry_not_before=None,
+            update_time=update_time,
+        )
 
     def fail_deletion(
         self,
