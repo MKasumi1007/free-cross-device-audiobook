@@ -391,3 +391,77 @@ def test_expired_deletion_lease_is_recovered_after_restart() -> None:
     assert recovered is not None
     assert recovered.request_id == "delete-a"
     assert recovered.lease_deadline == expired
+
+
+def test_worker_queues_only_audio_older_than_five_days() -> None:
+    now = datetime(2026, 7, 17, 12, tzinfo=UTC)
+    old_chunk = document("users/owner-a/books/book-a/audioChunks/chunk-old", {
+        "owner_uid": "owner-a",
+        "task_id": "task-old",
+        "book_id": "book-a",
+        "chunk_id": "chunk-old",
+        "status": "READY",
+        "completed_at": now - timedelta(days=6),
+        "deletion_generation": 2,
+        "storage_mode": "PRIVATE_FIRESTORE",
+        "asset_id": None,
+        "asset_url": None,
+        "timeline_asset_id": None,
+        "timeline_url": None,
+        "private_audio_key": "a" * 64,
+        "private_timeline_key": "b" * 64,
+        "private_audio_parts": 3,
+        "private_timeline_parts": 1,
+    })
+    recent_chunk = document("users/owner-a/books/book-a/audioChunks/chunk-recent", {
+        "owner_uid": "owner-a",
+        "task_id": "task-recent",
+        "book_id": "book-a",
+        "chunk_id": "chunk-recent",
+        "status": "READY",
+        "completed_at": now - timedelta(days=2),
+        "deletion_generation": 0,
+    })
+    transport = FakeTransport([
+        (200, [{"document": recent_chunk}, {"document": old_chunk}]),
+        (200, {"writeResults": [{}, {}]}),
+    ])
+
+    queued = FirestoreWorkerTasks(make_client(transport)).queue_expired_audio(
+        "owner-a",
+        now=now,
+    )
+
+    assert queued == 1
+    body = (transport.requests[-1][3] or b"").decode()
+    assert "AUTO_RETENTION_5_DAYS" in body
+    assert "chunk-old" in body
+    assert "chunk-recent" not in body
+    assert '"deletion_generation":{"integerValue":"3"}' in body
+    assert '"private_audio_key":{"stringValue":"' + "a" * 64 + '"}' in body
+    assert "REQUEST_TIME" in body
+    assert "private-id-token" not in body
+
+
+def test_retention_scan_does_not_queue_recent_audio() -> None:
+    now = datetime(2026, 7, 17, 12, tzinfo=UTC)
+    transport = FakeTransport([
+        (200, [{"document": document(
+            "users/owner-a/books/book-a/audioChunks/chunk-recent",
+            {
+                "owner_uid": "owner-a",
+                "task_id": "task-recent",
+                "book_id": "book-a",
+                "chunk_id": "chunk-recent",
+                "status": "READY",
+                "completed_at": now - timedelta(days=4),
+                "deletion_generation": 0,
+            },
+        )}]),
+    ])
+
+    assert FirestoreWorkerTasks(make_client(transport)).queue_expired_audio(
+        "owner-a",
+        now=now,
+    ) == 0
+    assert len(transport.requests) == 1

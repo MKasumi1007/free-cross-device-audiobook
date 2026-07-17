@@ -311,6 +311,26 @@ service cloud.firestore {
           ) || (
             activeWorkerFor(ownerUid)
             && requestKeepsOwner(ownerUid)
+            && resource.data.status == 'READY'
+            && resource.data.completed_at <= request.time - duration.value(120, 'h')
+            && request.resource.data.status == 'DELETING'
+            && request.resource.data.deletion_generation == resource.data.deletion_generation + 1
+            && request.resource.data.deletion_request_id is string
+            && request.resource.data.delete_requested_at == request.time
+            && request.resource.data.updated_at == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'deletion_generation', 'deletion_request_id',
+              'delete_requested_at', 'updated_at'
+            ])
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.reason == 'AUTO_RETENTION_5_DAYS'
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.book_id == bookId
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.chunk_id == chunkId
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.task_id == resource.data.task_id
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.status == 'QUEUED'
+            && deletionRequestAfter(ownerUid, request.resource.data.deletion_request_id).data.deletion_generation == request.resource.data.deletion_generation
+          ) || (
+            activeWorkerFor(ownerUid)
+            && requestKeepsOwner(ownerUid)
             && resource.data.status == 'DELETING'
             && request.resource.data.status == 'DELETED'
             && request.resource.data.task_id == resource.data.task_id
@@ -454,7 +474,8 @@ service cloud.firestore {
 
       match /audioDeletionRequests/{requestId} {
         allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
-        allow create: if isOwner(ownerUid)
+        allow create: if (
+          isOwner(ownerUid)
           && requestKeepsOwner(ownerUid)
           && request.resource.data.request_id == requestId
           && request.resource.data.status == 'QUEUED'
@@ -469,7 +490,29 @@ service cloud.firestore {
           ).data.deletion_request_id == requestId
           && getAfter(
             /databases/$(database)/documents/users/$(ownerUid)/books/$(request.resource.data.book_id)/audioChunks/$(request.resource.data.chunk_id)
-          ).data.deletion_generation == request.resource.data.deletion_generation;
+          ).data.deletion_generation == request.resource.data.deletion_generation
+        ) || (
+          activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.request_id == requestId
+          && request.resource.data.status == 'QUEUED'
+          && request.resource.data.attempt_count == 0
+          && request.resource.data.reason == 'AUTO_RETENTION_5_DAYS'
+          && request.resource.data.created_at == request.time
+          && request.resource.data.updated_at == request.time
+          && getAfter(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(request.resource.data.book_id)/audioChunks/$(request.resource.data.chunk_id)
+          ).data.status == 'DELETING'
+          && getAfter(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(request.resource.data.book_id)/audioChunks/$(request.resource.data.chunk_id)
+          ).data.deletion_request_id == requestId
+          && getAfter(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(request.resource.data.book_id)/audioChunks/$(request.resource.data.chunk_id)
+          ).data.completed_at <= request.time - duration.value(120, 'h')
+          && getAfter(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(request.resource.data.book_id)/audioChunks/$(request.resource.data.chunk_id)
+          ).data.deletion_generation == request.resource.data.deletion_generation
+        );
         allow update: if activeWorkerFor(ownerUid)
           && requestKeepsOwner(ownerUid)
           && request.resource.data.request_id == requestId

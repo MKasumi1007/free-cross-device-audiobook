@@ -42,7 +42,7 @@ TTL deletes, point-in-time recovery, backups, restores, clones, additional datab
 - The local safety thresholds stop at 45,000 estimated reads, 18,000 writes, or 18,000 deletes per UTC day, below the documented Spark quotas; the estimate resets the next day.
 - Private assets use 512 KiB payload parts because a Firestore document is limited to 1 MiB. The payload field is not indexed.
 - The Mac refuses a private logical asset over 32 MiB and refuses new private uploads after 700 MiB total, leaving headroom inside the 1 GiB free database quota.
-- The design uses neither paid TTL nor automated backups. Private audio remains until the user explicitly deletes it.
+- The design uses neither paid TTL nor automated backups. The paired Mac enforces five-day audio retention with ordinary Firestore writes, and Firestore Rules reject early automatic deletion. Manual deletion remains available.
 
 The Firebase Web config in `config/firebase-public-config.json` is public client configuration. Firebase's official documentation says these Firebase API keys identify the project/app and are not backend authorization; Authentication and Security Rules enforce access. No OAuth token, refresh token, password, cookie, private key, or Firebase CLI credential is stored in the repository.
 

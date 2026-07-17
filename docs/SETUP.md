@@ -47,6 +47,7 @@ Normal voice and generation flow:
 3. Open a book and click `生成约 5 小时音频`. A rights-confirmed book publishes to GitHub; a `LOCAL_ONLY` book shows `私密生成约 5 小时音频` and uses only the signed-in owner's Firestore area.
 4. The background Agent processes one task at a time. It pauses instead of loading Qwen when the Mac is on battery or has less than 2 GiB available memory.
 5. A failed or restarted task resumes from its segment checkpoint. Public and private assets are hash-verified before Firestore marks them ready; local WAV/M4A files are then removed and Qwen unloads after four idle minutes.
+6. Each ready audio chunk is retained for five days from its completion time. The paired Mac checks hourly while online and queues verified deletion; if the Mac is off at the deadline, deletion happens after it next starts.
 
 Normal listening flow:
 
@@ -61,7 +62,7 @@ Normal audio-space flow:
 
 1. Open `音频空间` in the top bar, or open a book and click `管理已生成音频`.
 2. Review the total occupied bytes and duration, then select all books or one book.
-3. Delete one chunk, one chapter, one book, or all generated audio. A final dialog states the exact scope and size before anything is queued.
+3. Audio is automatically queued for deletion five days after generation, or it can be deleted earlier by chunk, chapter, book, or the full library. A final dialog states the exact scope and size before a manual request is queued.
 4. The Mac Agent deletes either the public GitHub pair or the owner-only Firestore parts, verifies they are absent, then changes the row from `删除中` to `已删除`. The voice model is not loaded for this work.
 5. Books, chapter text, bookmarks, reading progress, voice samples, hashes, sizes, and the original text cursor remain untouched.
 6. Click `从原位置重新生成` later to recreate only that chunk from its preserved starting paragraph.
@@ -71,4 +72,4 @@ If the conservative daily Spark estimate is reached, or Firebase reports quota e
 
 The anonymous Agent refresh token is stored only in macOS Keychain. Real books, voice samples, parsed text, generated audio, OAuth tokens, cookies, and account credentials must never be added to Git.
 
-Firebase Hosting and Storage are intentionally unused. The production static site uses GitHub Pages; browser-readable text and timelines for rights-confirmed books use the public `book-assets` branch, and audio uses public Releases. `LOCAL_ONLY` assets use owner-only Firestore documents with a 700 MiB hard ceiling. Long-form generation remains local to the Mac. Remote assets are retained until an explicit manual deletion and are never moved to a paid service automatically.
+Firebase Hosting and Storage are intentionally unused. The production static site uses GitHub Pages; browser-readable text and timelines for rights-confirmed books use the public `book-assets` branch, and audio uses public Releases. `LOCAL_ONLY` assets use owner-only Firestore documents with a 700 MiB hard ceiling. Long-form generation remains local to the Mac. Audio is removed after the five-day retention window when the Mac is online, can be removed earlier manually, and is never moved to a paid service automatically.

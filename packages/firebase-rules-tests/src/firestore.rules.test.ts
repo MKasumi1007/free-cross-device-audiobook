@@ -724,6 +724,104 @@ describe("worker permissions", () => {
     await assertSucceeds(regenerateBatch.commit());
   });
 
+  it("lets the active worker queue five-day retention but rejects early deletion", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    const oldChunkPath = "users/owner-a/books/book-a/audioChunks/chunk-old";
+    const recentChunkPath = "users/owner-a/books/book-a/audioChunks/chunk-recent";
+    const baseChunk = {
+      owner_uid: "owner-a",
+      task_id: "task-a",
+      book_id: "book-a",
+      chapter_id: "chapter-a",
+      status: "READY",
+      start_segment_id: "segment-a",
+      end_segment_id: "segment-b",
+      duration_seconds: 600,
+      asset_id: 101,
+      asset_url: "https://example.test/audio.m4a",
+      byte_size: 1000,
+      sha256: "a".repeat(64),
+      timeline_asset_id: 202,
+      timeline_url: "https://example.test/timeline.json.gz",
+      timeline_sha256: "b".repeat(64),
+      voice_version: "voice-a",
+      deletion_generation: 0,
+    };
+    await seed(oldChunkPath, {
+      ...baseChunk,
+      chunk_id: "chunk-old",
+      completed_at: Timestamp.fromMillis(Date.now() - 6 * 24 * 60 * 60 * 1000),
+    });
+    await seed(recentChunkPath, {
+      ...baseChunk,
+      chunk_id: "chunk-recent",
+      completed_at: Timestamp.fromMillis(Date.now() - 2 * 24 * 60 * 60 * 1000),
+    });
+
+    const worker = workerDb();
+    const oldRequestId = "auto-old";
+    const oldBatch = writeBatch(worker);
+    oldBatch.update(doc(worker, oldChunkPath), {
+      status: "DELETING",
+      deletion_generation: 1,
+      deletion_request_id: oldRequestId,
+      delete_requested_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    oldBatch.set(doc(worker, `users/owner-a/audioDeletionRequests/${oldRequestId}`), {
+      owner_uid: "owner-a",
+      request_id: oldRequestId,
+      book_id: "book-a",
+      chunk_id: "chunk-old",
+      task_id: "task-a",
+      asset_id: 101,
+      asset_url: "https://example.test/audio.m4a",
+      timeline_asset_id: 202,
+      timeline_url: "https://example.test/timeline.json.gz",
+      deletion_generation: 1,
+      status: "QUEUED",
+      attempt_count: 0,
+      reason: "AUTO_RETENTION_5_DAYS",
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    await assertSucceeds(oldBatch.commit());
+
+    const recentRequestId = "auto-recent";
+    const recentBatch = writeBatch(worker);
+    recentBatch.update(doc(worker, recentChunkPath), {
+      status: "DELETING",
+      deletion_generation: 1,
+      deletion_request_id: recentRequestId,
+      delete_requested_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    recentBatch.set(doc(worker, `users/owner-a/audioDeletionRequests/${recentRequestId}`), {
+      owner_uid: "owner-a",
+      request_id: recentRequestId,
+      book_id: "book-a",
+      chunk_id: "chunk-recent",
+      task_id: "task-a",
+      asset_id: 101,
+      asset_url: "https://example.test/audio.m4a",
+      timeline_asset_id: 202,
+      timeline_url: "https://example.test/timeline.json.gz",
+      deletion_generation: 1,
+      status: "QUEUED",
+      attempt_count: 0,
+      reason: "AUTO_RETENTION_5_DAYS",
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    await assertFails(recentBatch.commit());
+  });
+
   it("rejects a deletion completion without the matching worker lease", async () => {
     await seed("workerLinks/worker-a", {
       worker_uid: "worker-a", owner_uid: "owner-a", worker_type: "MAC_AGENT",

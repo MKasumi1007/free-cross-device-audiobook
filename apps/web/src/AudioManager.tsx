@@ -163,7 +163,7 @@ export function AudioManager({
           <div>
             <span className="modal-kicker">远程音频管理</span>
             <h2 id="audio-manager-title">音频空间</h2>
-            <p>统一管理公开音频和账号私有音频，不会删除书、正文、书签、阅读进度或声音样本。</p>
+            <p>统一管理公开音频和账号私有音频。音频生成满 5 天后会在 Mac 下次在线时自动删除，但书、正文、书签、阅读进度和声音样本都会保留。</p>
           </div>
           <button className="modal-close" onClick={onClose} aria-label="关闭音频空间">×</button>
         </header>
@@ -239,7 +239,7 @@ export function AudioManager({
         </div>
 
         <footer className="audio-manager-footer">
-          <span>已删除记录会保留起始文字位置和校验信息，便于以后安全重建。</span>
+          <span>可以提前手动删除；到期删除后仍会保留起始文字位置和校验信息，便于以后安全重建。</span>
           <button className="quiet-button" onClick={onClose}>关闭</button>
         </footer>
 

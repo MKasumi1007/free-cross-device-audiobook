@@ -102,6 +102,7 @@ class MacGenerationWorker:
         self.last_error = ""
         self._last_presence = 0.0
         self._last_cleanup = float("-inf")
+        self._last_retention = float("-inf")
         self._last_reconciliation = float("-inf")
 
     def start(self) -> None:
@@ -138,6 +139,7 @@ class MacGenerationWorker:
             self.tasks.touch_presence()
             self._last_presence = time.monotonic()
         self._periodic_cleanup()
+        self._periodic_retention(owner_uid)
         deletion = self.tasks.next_deletion(owner_uid)
         if deletion is not None:
             return self._process_deletion(deletion)
@@ -279,6 +281,13 @@ class MacGenerationWorker:
             return
         clean_expired_generation_files(self.work_root)
         self._last_cleanup = now
+
+    def _periodic_retention(self, owner_uid: str) -> None:
+        now = time.monotonic()
+        if now - self._last_retention < 60 * 60:
+            return
+        self.tasks.queue_expired_audio(owner_uid)
+        self._last_retention = now
 
     def _maybe_reconcile(self, owner_uid: str) -> bool:
         now = time.monotonic()

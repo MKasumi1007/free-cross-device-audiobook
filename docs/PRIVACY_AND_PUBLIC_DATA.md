@@ -38,6 +38,8 @@ Public generation is denied for `LOCAL_ONLY` books. Private generation requires 
 
 Private files are SHA-256 checked, split into at most 512 KiB per Firestore document, limited to 32 MiB per logical file, and stopped at 700 MiB total private assets. The browser temporarily joins only the current roughly ten-minute audio chunk and revokes its object URL when switching. Qwen remains on the Mac and unloads after four idle minutes.
 
+Generated audio, whether public or private, is retained for five days from the chunk's server-recorded completion time. The paired Mac checks hourly while online and routes expired audio through the same fenced, verified deletion process used by the manual controls. Firestore Rules independently require at least 120 hours before accepting an automatic deletion request. Books, parsed text, voice samples, bookmarks, reading progress, and regeneration cursors are not part of this automatic deletion.
+
 ## Public-Asset Warning
 
 GitHub Release assets and files on the public `book-assets` branch can be copied by anyone. Deleting a remote asset cannot revoke third-party downloads, Git history, or caches.

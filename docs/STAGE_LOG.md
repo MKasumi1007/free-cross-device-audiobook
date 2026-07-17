@@ -149,7 +149,7 @@ Completed: 2026-07-17.
 - Firebase remains Spark with no Billing account or payment method; only Authentication and Firestore are used.
 - GitHub Pages, public Releases, and standard public-repository Actions remain the only remote services.
 - Production speech generation uses the user's Mac. The app pauses on local resource pressure and never falls back to a paid GPU.
-- Public Release assets remain available until explicit manual deletion; deletion cannot revoke copies already downloaded by others.
+- At this stage, public Release assets remained available until explicit manual deletion. The later five-day retention extension supersedes this behavior; deletion still cannot revoke copies already downloaded by others.
 
 ### Next
 
@@ -188,7 +188,7 @@ Completed: 2026-07-17.
 - Firebase remains Spark with no Billing account or payment method; only Authentication and Firestore are used.
 - GitHub Pages serves the app shell, the public data branch serves rights-confirmed text/timelines, and Releases serve public audio.
 - Production TTS remains local to the Mac, one task at a time. No cloud GPU, paid storage, Firebase Hosting, Functions, or larger Actions runner was enabled.
-- Remote assets remain public until manual deletion. Git history and third-party copies cannot be revoked.
+- At this stage, remote assets remained public until manual deletion. The later five-day retention extension supersedes this behavior; Git history and third-party copies still cannot be revoked.
 
 ### Residual Verification
 
@@ -247,6 +247,7 @@ Completed: 2026-07-17.
 - Extended two-phase deletion and regeneration to remove and verify private Firestore parts without touching books, progress, bookmarks, or voice data.
 - Kept public reconciliation limited to GitHub-backed records so private records are never treated as missing public assets.
 - Preserved the four-minute Qwen idle unload and successful-upload cleanup of local WAV, M4A, and timeline files.
+- Added five-day audio retention: the active Mac checks hourly, queues only chunks whose server completion time is at least 120 hours old, and reuses the existing verified two-phase deletion path. Firestore Rules independently reject early automatic deletion.
 
 ### Verification
 

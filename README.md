@@ -2,6 +2,9 @@
 
 This repository implements the separately maintained v1.3 product specification.
 
+中文项目说明、使用方法、架构、隐私边界和维护手册见
+[`docs/项目完整说明.md`](docs/项目完整说明.md)。
+
 Current status: stage 5 plus the owner-only private-library extension are implemented and verified. Physical iPhone acceptance remains outstanding.
 
 ## Fixed Decisions
@@ -13,7 +16,7 @@ Current status: stage 5 plus the owner-only private-library extension are implem
 - Real voice samples remain on the Mac by default.
 - Rights-confirmed parsed text and timelines may be stored on the public `book-assets` branch; generated audio may be stored as public GitHub Release assets.
 - `LOCAL_ONLY` text, timelines, and audio use owner-only Firestore documents and never enter GitHub.
-- Remote audio remains available until the user manually deletes it.
+- Generated audio enters safe deletion after five days when the paired Mac is next online; the user may delete it earlier.
 
 No real book, voice sample, generated audiobook, credential, or model cache belongs in Git history.
 
@@ -44,6 +47,7 @@ No real book, voice sample, generated audiobook, credential, or model cache belo
 - Two-phase remote deletion with generation barriers, idempotent retries, and explicit irreversible confirmation.
 - Regeneration from the deleted chunk's preserved text cursor without deleting books, text, bookmarks, progress, or voice data.
 - Conservative Spark quota pauses, GitHub rate-limit backoff, six-hour local cleanup, and report-only remote reconciliation.
+- Five-day remote-audio retention enforced by both the Mac worker and Firestore Rules; deletion preserves books, text, bookmarks, progress, voice data, and regeneration cursors.
 - Owner-only Firestore assets split into 512 KiB parts, verified by SHA-256, capped at 32 MiB each and 700 MiB total.
 - Private book text and the current private audio chunk load on signed-in phones without the Mac or Qwen running.
 

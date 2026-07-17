@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any
 from urllib.parse import quote
 
@@ -75,6 +76,8 @@ class RemoteAudioRecord:
 
 class FirestoreWorkerTasks:
     LEASE_SECONDS = 20 * 60
+    AUDIO_RETENTION = timedelta(days=5)
+    RETENTION_CLOCK_SAFETY = timedelta(minutes=5)
     AUTO_RESUME_PAUSES = frozenset({"WAITING_FOR_AC_POWER", "MEMORY_PRESSURE", "WAITING_FOR_MAC"})
 
     def __init__(self, client: FirebaseRestClient) -> None:
@@ -161,6 +164,53 @@ class FirestoreWorkerTasks:
             ]
         claimable.sort(key=lambda item: item.request_id)
         return claimable[0] if claimable else None
+
+    def queue_expired_audio(
+        self,
+        owner_uid: str,
+        *,
+        now: datetime | None = None,
+        limit: int = 25,
+    ) -> int:
+        """Queue audio older than five days; Firestore Rules enforce the same cutoff."""
+        if limit <= 0:
+            return 0
+        now = now or datetime.now(UTC)
+        cutoff = now - self.AUDIO_RETENTION - self.RETENTION_CLOCK_SAFETY
+        candidates: list[tuple[datetime, dict[str, Any], dict[str, Any]]] = []
+        for document in self._query_audio_documents(owner_uid):
+            values = self._fields(document)
+            completed_at = values.get("completed_at")
+            if (
+                values.get("status") != "READY"
+                or not isinstance(completed_at, datetime)
+                or completed_at > cutoff
+                or not document.get("updateTime")
+            ):
+                continue
+            if not all(values.get(name) for name in ("book_id", "chunk_id", "task_id")):
+                continue
+            candidates.append((completed_at, document, values))
+
+        candidates.sort(key=lambda item: (item[0], str(item[2]["chunk_id"])))
+        queued = 0
+        for _, document, values in candidates[:limit]:
+            deletion_generation = int(values.get("deletion_generation") or 0) + 1
+            request_id = "auto-" + sha256(
+                (
+                    f"{owner_uid}:{values['book_id']}:{values['chunk_id']}:"
+                    f"{deletion_generation}:AUTO_RETENTION_5_DAYS"
+                ).encode("utf-8")
+            ).hexdigest()[:40]
+            self._queue_retention_deletion(
+                owner_uid,
+                document,
+                values,
+                request_id=request_id,
+                deletion_generation=deletion_generation,
+            )
+            queued += 1
+        return queued
 
     def claim(self, task: CloudTask) -> CloudTask:
         identity = self.client.authenticate()
@@ -552,26 +602,9 @@ class FirestoreWorkerTasks:
         )
 
     def audio_inventory(self, owner_uid: str) -> list[RemoteAudioRecord]:
-        identity = self.client.authenticate()
-        owner_path = f"users/{quote(owner_uid, safe='')}"
-        payload = {
-            "structuredQuery": {
-                "from": [{"collectionId": "audioChunks", "allDescendants": True}],
-            }
-        }
-        _, value = self.client._json_request(
-            "读取远程音频清单",
-            "POST",
-            f"{self._document_url(owner_path)}:runQuery",
-            payload=payload,
-            id_token=identity.id_token,
-        )
-        rows = value if isinstance(value, list) else []
         records: list[RemoteAudioRecord] = []
-        for row in rows:
-            if not isinstance(row, dict) or not isinstance(row.get("document"), dict):
-                continue
-            fields = self._fields(row["document"])
+        for document in self._query_audio_documents(owner_uid):
+            fields = self._fields(document)
             records.append(RemoteAudioRecord(
                 owner_uid=owner_uid,
                 book_id=str(fields.get("book_id") or ""),
@@ -589,6 +622,99 @@ class FirestoreWorkerTasks:
                 storage_mode=str(fields.get("storage_mode") or "PUBLIC_GITHUB"),
             ))
         return records
+
+    def _queue_retention_deletion(
+        self,
+        owner_uid: str,
+        document: dict[str, Any],
+        values: dict[str, Any],
+        *,
+        request_id: str,
+        deletion_generation: int,
+    ) -> None:
+        identity = self.client.authenticate()
+        book_id = str(values["book_id"])
+        chunk_id = str(values["chunk_id"])
+        task_id = str(values["task_id"])
+        chunk_path = f"users/{owner_uid}/books/{book_id}/audioChunks/{chunk_id}"
+        request_path = f"users/{owner_uid}/audioDeletionRequests/{request_id}"
+        chunk_write = {
+            "update": {
+                "name": self._document_name(chunk_path),
+                "fields": {
+                    "status": self._string("DELETING"),
+                    "deletion_generation": self._integer(deletion_generation),
+                    "deletion_request_id": self._string(request_id),
+                },
+            },
+            "updateMask": {
+                "fieldPaths": ["status", "deletion_generation", "deletion_request_id"]
+            },
+            "updateTransforms": [
+                {"fieldPath": "delete_requested_at", "setToServerValue": "REQUEST_TIME"},
+                {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"},
+            ],
+            "currentDocument": {"updateTime": str(document["updateTime"])},
+        }
+        request_fields = {
+            "owner_uid": self._string(owner_uid),
+            "request_id": self._string(request_id),
+            "book_id": self._string(book_id),
+            "chunk_id": self._string(chunk_id),
+            "task_id": self._string(task_id),
+            "asset_id": self._value(values.get("asset_id")),
+            "asset_url": self._value(values.get("asset_url")),
+            "timeline_asset_id": self._value(values.get("timeline_asset_id")),
+            "timeline_url": self._value(values.get("timeline_url")),
+            "storage_mode": self._string(str(values.get("storage_mode") or "PUBLIC_GITHUB")),
+            "private_audio_key": self._value(values.get("private_audio_key")),
+            "private_timeline_key": self._value(values.get("private_timeline_key")),
+            "private_audio_parts": self._integer(int(values.get("private_audio_parts") or 0)),
+            "private_timeline_parts": self._integer(
+                int(values.get("private_timeline_parts") or 0)
+            ),
+            "deletion_generation": self._integer(deletion_generation),
+            "status": self._string("QUEUED"),
+            "attempt_count": self._integer(0),
+            "reason": self._string("AUTO_RETENTION_5_DAYS"),
+        }
+        request_write = {
+            "update": {"name": self._document_name(request_path), "fields": request_fields},
+            "currentDocument": {"exists": False},
+            "updateTransforms": [
+                {"fieldPath": "created_at", "setToServerValue": "REQUEST_TIME"},
+                {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"},
+            ],
+        }
+        self.client._json_request(
+            "安排五天到期音频删除",
+            "POST",
+            self._commit_url(),
+            payload={"writes": [chunk_write, request_write]},
+            id_token=identity.id_token,
+        )
+
+    def _query_audio_documents(self, owner_uid: str) -> list[dict[str, Any]]:
+        identity = self.client.authenticate()
+        owner_path = f"users/{quote(owner_uid, safe='')}"
+        payload = {
+            "structuredQuery": {
+                "from": [{"collectionId": "audioChunks", "allDescendants": True}],
+            }
+        }
+        _, value = self.client._json_request(
+            "读取远程音频清单",
+            "POST",
+            f"{self._document_url(owner_path)}:runQuery",
+            payload=payload,
+            id_token=identity.id_token,
+        )
+        rows = value if isinstance(value, list) else []
+        return [
+            row["document"]
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("document"), dict)
+        ]
 
     def record_reconciliation(
         self,
