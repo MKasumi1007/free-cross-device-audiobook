@@ -13,6 +13,7 @@ export default defineConfig({
         name: "听见书页",
         short_name: "听见书页",
         description: "在 Mac 添加书，在手机和电脑边听边看。",
+        lang: "zh-CN",
         theme_color: "#a43b2b",
         background_color: "#f2eadb",
         display: "standalone",
