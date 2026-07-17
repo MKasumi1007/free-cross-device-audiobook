@@ -161,9 +161,9 @@ export function AudioManager({
       <section className="audio-manager" role="dialog" aria-modal="true" aria-labelledby="audio-manager-title">
         <header className="audio-manager-heading">
           <div>
-            <span className="modal-kicker">公开音频管理</span>
+            <span className="modal-kicker">远程音频管理</span>
             <h2 id="audio-manager-title">音频空间</h2>
-            <p>只管理 GitHub 上生成的音频，不会删除书、正文、书签、阅读进度或声音样本。</p>
+            <p>统一管理公开音频和账号私有音频，不会删除书、正文、书签、阅读进度或声音样本。</p>
           </div>
           <button className="modal-close" onClick={onClose} aria-label="关闭音频空间">×</button>
         </header>
@@ -223,7 +223,7 @@ export function AudioManager({
                       {chunk.status === "DELETING" && "删除中"}
                       {chunk.status === "DELETED" && "已删除"}
                     </span>
-                    <b>第 {index + 1} 段</b>
+                    <b>第 {index + 1} 段 · {chunk.storage_mode === "PRIVATE_FIRESTORE" ? "私有" : "公开"}</b>
                     <span>{formatDuration(chunk.duration_seconds)} · {formatBytes(chunk.byte_size)}</span>
                     {audioChunkCanBeDeleted(chunk) && (
                       <button className="text-danger-button" disabled={busy} onClick={() => askToDelete("这一段", [chunk])}>删除</button>
@@ -247,8 +247,8 @@ export function AudioManager({
           <div className="audio-confirm" role="alertdialog" aria-modal="true" aria-labelledby="audio-confirm-title">
             <section>
               <span className="modal-kicker">最后确认</span>
-              <h3 id="audio-confirm-title">删除{selection.label}的公开音频？</h3>
-              <p>将永久删除 GitHub 上的 {selection.chunks.length} 段音频（{formatBytes(calculateAudioStats(selection.chunks).bytes)}）。这个操作不能撤销，但书籍、正文、书签、进度和你的声音都会保留。</p>
+              <h3 id="audio-confirm-title">删除{selection.label}的远程音频？</h3>
+              <p>将永久删除选中的 {selection.chunks.length} 段公开或私有音频（{formatBytes(calculateAudioStats(selection.chunks).bytes)}）。这个操作不能撤销，但书籍、正文、书签、进度和你的声音都会保留。</p>
               <div className="modal-actions">
                 <button className="quiet-button" onClick={() => setSelection(null)}>取消</button>
                 <button className="danger-button" onClick={() => void confirmDelete()} disabled={busy}>确认删除音频</button>

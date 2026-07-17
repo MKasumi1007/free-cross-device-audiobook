@@ -46,6 +46,22 @@ describe("audiobook player planning", () => {
     expect(chunkForSegment(demoBook, chunks, second)?.chunk_id).toBe("first");
   });
 
+  it("treats an owner-only Firestore asset as playable without a public URL", () => {
+    const first = demoBook.chapters[0]!.segments[0]!.segment_id;
+    const privateChunk: AudioChunk = {
+      ...chunk("private", first, first),
+      asset_id: null,
+      asset_url: null,
+      timeline_asset_id: null,
+      timeline_url: null,
+      storage_mode: "PRIVATE_FIRESTORE",
+      private_audio_key: "c".repeat(64),
+      private_timeline_key: "d".repeat(64),
+    };
+
+    expect(readyChunks(demoBook, [privateChunk])).toEqual([privateChunk]);
+  });
+
   it("maps audio time to text and formats player time", () => {
     const segmentId = demoBook.chapters[0]!.segments[0]!.segment_id;
     const timeline = {

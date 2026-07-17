@@ -55,6 +55,10 @@ class PublishedAsset:
     byte_size: int
     sha256: str
     created: bool = True
+    storage_mode: str = "PUBLIC_GITHUB"
+    private_key: str = ""
+    part_count: int = 0
+    content_type: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,8 @@ class SegmentGenerator(Protocol):
 
 
 class Publisher(Protocol):
+    storage_mode: str
+
     def publish(self, book_id: str, path: Path, asset_name: str) -> PublishedAsset: ...
 
     def delete(self, book_id: str, asset_id: int) -> None: ...
@@ -242,9 +248,11 @@ class ChunkPipeline:
                 audio_asset = self.publisher.publish(job.book_id, audio_path, audio_name)
                 if audio_asset.created:
                     uploaded.append(audio_asset)
+                self._validate_published_asset(audio_asset)
                 timeline_asset = self.publisher.publish(job.book_id, timeline_path, timeline_name)
                 if timeline_asset.created:
                     uploaded.append(timeline_asset)
+                self._validate_published_asset(timeline_asset)
                 self.fence.assert_current(job)
             except Exception:
                 for asset in uploaded:
@@ -372,12 +380,29 @@ class ChunkPipeline:
             segment_dir.rmdir()
 
     def _validate(self, job: ChunkJob) -> None:
-        if job.publication_mode is not PublicationMode.PUBLIC_RIGHTS_CONFIRMED:
-            raise GenerationError("RIGHTS_NOT_CONFIRMED", "尚未确认传播权，不能公开生成音频。")
+        storage_mode = getattr(self.publisher, "storage_mode", "PUBLIC_GITHUB")
+        if (
+            job.publication_mode is PublicationMode.LOCAL_ONLY
+            and storage_mode != "PRIVATE_FIRESTORE"
+        ):
+            raise GenerationError(
+                "PRIVATE_STORAGE_REQUIRED",
+                "未确认传播权的书只能生成到账号私有区，不能公开发布。",
+            )
+        if (
+            job.publication_mode is PublicationMode.PUBLIC_RIGHTS_CONFIRMED
+            and storage_mode != "PUBLIC_GITHUB"
+        ):
+            raise GenerationError("STORAGE_MODE_MISMATCH", "音频发布方式与书籍权利设置不一致。")
         if not job.segments or any(not segment.spoken_text for segment in job.segments):
             raise GenerationError("EMPTY_CHUNK", "音频块没有可朗读正文。")
         if not job.lease_token or job.attempt_id <= 0:
             raise GenerationError("LEASE_REQUIRED", "生成任务没有有效租约。")
+
+    def _validate_published_asset(self, asset: PublishedAsset) -> None:
+        expected = getattr(self.publisher, "storage_mode", "PUBLIC_GITHUB")
+        if asset.storage_mode != expected:
+            raise GenerationError("STORAGE_MODE_MISMATCH", "发布结果进入了错误的存储区域。")
 
     def _checkpoint_payload(
         self,

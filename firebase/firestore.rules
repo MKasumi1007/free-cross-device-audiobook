@@ -59,6 +59,39 @@ service cloud.firestore {
       );
     }
 
+    function privateAssetReady(ownerUid, assetKey, bookId, kind) {
+      let assetPath = /databases/$(database)/documents/users/$(ownerUid)/privateAssets/$(assetKey);
+      return assetKey is string
+        && assetKey.size() == 64
+        && exists(assetPath)
+        && get(assetPath).data.owner_uid == ownerUid
+        && get(assetPath).data.book_id == bookId
+        && get(assetPath).data.kind == kind
+        && get(assetPath).data.status == 'READY';
+    }
+
+    function validReadyAudioStorage(ownerUid, bookId) {
+      return (
+        request.resource.data.storage_mode == 'PUBLIC_GITHUB'
+        && request.resource.data.asset_id is int
+        && request.resource.data.asset_url is string
+        && request.resource.data.timeline_asset_id is int
+        && request.resource.data.timeline_url is string
+      ) || (
+        request.resource.data.storage_mode == 'PRIVATE_FIRESTORE'
+        && request.resource.data.asset_id == null
+        && request.resource.data.asset_url == null
+        && request.resource.data.timeline_asset_id == null
+        && request.resource.data.timeline_url == null
+        && privateAssetReady(
+          ownerUid, request.resource.data.private_audio_key, bookId, 'AUDIO'
+        )
+        && privateAssetReady(
+          ownerUid, request.resource.data.private_timeline_key, bookId, 'TIMELINE'
+        )
+      );
+    }
+
     function ownerUpdateOnly(ownerUid, fields) {
       return isOwner(ownerUid)
         && requestKeepsOwner(ownerUid)
@@ -176,6 +209,25 @@ service cloud.firestore {
             'text_status', 'text_asset_id', 'text_asset_name', 'text_asset_url',
             'text_sha256', 'text_byte_size', 'text_schema_version', 'updated_at'
           ])
+        ) || (
+          activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && resource.data.publication_mode == 'LOCAL_ONLY'
+          && request.resource.data.book_id == resource.data.book_id
+          && request.resource.data.source_sha256 == resource.data.source_sha256
+          && request.resource.data.text_status == 'READY'
+          && request.resource.data.private_text_key is string
+          && request.resource.data.private_text_key.size() == 64
+          && request.resource.data.private_text_sha256 is string
+          && request.resource.data.private_text_sha256.size() == 64
+          && privateAssetReady(
+            ownerUid, request.resource.data.private_text_key, resource.data.book_id, 'BOOK_TEXT'
+          )
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'text_status', 'private_text_key', 'private_text_name',
+            'private_text_sha256', 'private_text_byte_size', 'private_text_parts',
+            'text_schema_version', 'updated_at'
+          ])
         );
         allow delete: if isOwner(ownerUid);
 
@@ -205,6 +257,7 @@ service cloud.firestore {
             && request.resource.data.chunk_id == chunkId
             && request.resource.data.status == 'READY'
             && request.resource.data.task_id is string
+            && validReadyAudioStorage(ownerUid, bookId)
             && activeTaskLease(ownerUid, request.resource.data.task_id);
           allow update: if (
             isOwner(ownerUid)
@@ -226,13 +279,15 @@ service cloud.firestore {
             && resource.data.status == 'FAILED_RETRYABLE'
             && request.resource.data.status == 'READY'
             && request.resource.data.deletion_generation == resource.data.deletion_generation
+            && validReadyAudioStorage(ownerUid, bookId)
             && activeTaskLease(ownerUid, request.resource.data.task_id)
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'status', 'attempt_id', 'lease_token', 'start_segment_id', 'end_segment_id',
               'chapter_id', 'duration_seconds', 'asset_id', 'asset_url', 'sha256',
               'byte_size', 'codec', 'timeline_asset_id', 'timeline_url',
-              'timeline_sha256', 'voice_version', 'error_code', 'updated_at',
-              'completed_at'
+              'timeline_sha256', 'storage_mode', 'private_audio_key',
+              'private_timeline_key', 'private_audio_parts', 'private_timeline_parts',
+              'voice_version', 'error_code', 'updated_at', 'completed_at'
             ])
           ) || (
             isOwner(ownerUid)
@@ -266,11 +321,17 @@ service cloud.firestore {
             && request.resource.data.asset_url == null
             && request.resource.data.timeline_asset_id == null
             && request.resource.data.timeline_url == null
+            && request.resource.data.private_audio_key == null
+            && request.resource.data.private_timeline_key == null
+            && request.resource.data.private_audio_parts == 0
+            && request.resource.data.private_timeline_parts == 0
             && request.resource.data.deleted_at == request.time
             && request.resource.data.updated_at == request.time
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'status', 'asset_id', 'asset_url', 'timeline_asset_id',
-              'timeline_url', 'deleted_at', 'updated_at'
+              'timeline_url', 'private_audio_key', 'private_timeline_key',
+              'private_audio_parts', 'private_timeline_parts',
+              'deleted_at', 'updated_at'
             ])
             && deletionRequestAfter(ownerUid, resource.data.deletion_request_id).data.status == 'DONE'
             && deletionRequestAfter(ownerUid, resource.data.deletion_request_id).data.lease_owner == request.auth.uid
@@ -291,6 +352,55 @@ service cloud.firestore {
             && deletionTaskAfter(ownerUid, resource.data.task_id).data.start_segment_id == resource.data.start_segment_id
           );
           allow delete: if false;
+        }
+      }
+
+      match /privateAssets/{assetKey} {
+        allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
+        allow create: if activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.asset_key == assetKey
+          && assetKey.size() == 64
+          && request.resource.data.status == 'UPLOADING'
+          && request.resource.data.byte_size > 0
+          && request.resource.data.byte_size <= 33554432
+          && request.resource.data.part_count > 0
+          && request.resource.data.part_count <= 64
+          && request.resource.data.sha256 is string
+          && request.resource.data.sha256.size() == 64
+          && request.resource.data.keys().hasOnly([
+            'owner_uid', 'asset_key', 'book_id', 'task_id', 'asset_name', 'kind',
+            'status', 'content_type', 'byte_size', 'part_count', 'sha256',
+            'created_at', 'updated_at'
+          ]);
+        allow update: if activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && resource.data.asset_key == assetKey
+          && request.resource.data.asset_key == assetKey
+          && resource.data.status == 'UPLOADING'
+          && request.resource.data.status == 'READY'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'updated_at'
+          ]);
+        allow delete: if activeWorkerFor(ownerUid);
+
+        match /parts/{partId} {
+          allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
+          allow create: if activeWorkerFor(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && request.resource.data.asset_key == assetKey
+            && request.resource.data.part_index >= 0
+            && request.resource.data.part_index < 64
+            && request.resource.data.byte_size > 0
+            && request.resource.data.byte_size <= 524288
+            && request.resource.data.payload is bytes
+            && request.resource.data.payload.size() == request.resource.data.byte_size
+            && request.resource.data.keys().hasOnly([
+              'owner_uid', 'asset_key', 'part_index', 'byte_size', 'payload',
+              'created_at', 'updated_at'
+            ]);
+          allow update: if false;
+          allow delete: if activeWorkerFor(ownerUid);
         }
       }
 

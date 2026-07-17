@@ -178,6 +178,47 @@ def test_ready_metadata_is_idempotent_and_bound_to_task_lease() -> None:
     assert '"deletion_generation"' in body
 
 
+def test_private_ready_metadata_never_contains_a_public_url() -> None:
+    transport = FakeTransport([
+        (404, {}),
+        (200, {"writeResults": [{"updateTime": "2026-07-17T09:02:00Z"}]}),
+    ])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+    task = tasks._task("owner-a", document("users/owner-a/generationRequests/task-private", {
+        "task_id": "task-private",
+        "book_id": "book-private",
+        "status": "UPLOADING",
+        "priority": 300,
+        "attempt_id": 1,
+        "deletion_generation": 0,
+        "lease_token": "secure-private-lease",
+        "storage_mode": "PRIVATE_FIRESTORE",
+    }))
+    segment = SegmentJob("segment-a", "chapter-a", 0, "测试", "a" * 64)
+    job = ChunkJob(
+        "task-private", "book-private", "chunk-private", "chapter-a",
+        publication_mode=PublicationMode.LOCAL_ONLY,
+        voice_version="voice-a", attempt_id=1, lease_token="secure-private-lease",
+        deletion_generation=0, segments=(segment,),
+    )
+    audio = PublishedAsset(
+        10, "audio.m4a", "", 100, "b" * 64,
+        storage_mode="PRIVATE_FIRESTORE", private_key="c" * 64, part_count=2,
+    )
+    timeline = PublishedAsset(
+        11, "timeline.json.gz", "", 50, "d" * 64,
+        storage_mode="PRIVATE_FIRESTORE", private_key="e" * 64, part_count=1,
+    )
+
+    tasks.record_ready(task, job, PublishedChunk("chunk-private", 12.5, audio, timeline))
+
+    body = (transport.requests[-1][3] or b"").decode()
+    assert '"storage_mode":{"stringValue":"PRIVATE_FIRESTORE"}' in body
+    assert '"asset_url":{"nullValue":null}' in body
+    assert '"private_audio_key":{"stringValue":"' + "c" * 64 + '"}' in body
+    assert "https://" not in body
+
+
 def test_existing_matching_ready_metadata_does_not_write_again() -> None:
     transport = FakeTransport([
         (200, document("users/owner-a/books/book-a/audioChunks/chunk-a", {
@@ -268,6 +309,29 @@ def test_book_text_asset_metadata_is_reused_and_recorded(tmp_path: Path) -> None
     body = (transport.requests[-1][3] or b"").decode()
     assert "text_asset_url" in body
     assert "private-id-token" not in body
+
+
+def test_private_book_text_pointer_is_reused_without_public_url() -> None:
+    transport = FakeTransport([
+        (200, document("users/owner-a/books/book-private", {
+            "text_status": "READY",
+            "private_text_key": "f" * 64,
+            "private_text_name": "book-private-text.json.gz",
+            "private_text_sha256": "a" * 64,
+            "private_text_byte_size": 400,
+            "private_text_parts": 1,
+        })),
+    ])
+
+    asset = FirestoreWorkerTasks(make_client(transport)).book_text_asset(
+        "owner-a",
+        "book-private",
+    )
+
+    assert asset is not None
+    assert asset.storage_mode == "PRIVATE_FIRESTORE"
+    assert asset.private_key == "f" * 64
+    assert asset.url == ""
 
 
 def test_deletion_is_claimed_and_completed_with_metadata_barrier() -> None:

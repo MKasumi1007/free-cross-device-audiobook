@@ -5,6 +5,7 @@ import {
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
 import {
+  Bytes,
   Timestamp,
   doc,
   getDoc,
@@ -215,6 +216,77 @@ describe("worker permissions", () => {
       text_schema_version: 1,
       updated_at: serverTimestamp(),
     }));
+    await seed(`users/owner-a/privateAssets/${"d".repeat(64)}`, {
+      owner_uid: "owner-a",
+      asset_key: "d".repeat(64),
+      book_id: "private-book",
+      kind: "BOOK_TEXT",
+      status: "READY",
+    });
+    await assertSucceeds(updateDoc(doc(workerDb(), privatePath), {
+      text_status: "READY",
+      private_text_key: "d".repeat(64),
+      private_text_name: "book-private-text.json.gz",
+      private_text_sha256: "e".repeat(64),
+      private_text_byte_size: 500,
+      private_text_parts: 1,
+      text_schema_version: 1,
+      updated_at: serverTimestamp(),
+    }));
+  });
+
+  it("keeps private asset bytes owner-only and revokes worker access", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    const assetKey = "f".repeat(64);
+    const assetPath = `users/owner-a/privateAssets/${assetKey}`;
+    await assertSucceeds(setDoc(doc(workerDb(), assetPath), {
+      owner_uid: "owner-a",
+      asset_key: assetKey,
+      book_id: "book-a",
+      task_id: "task-a",
+      asset_name: "audio-private.m4a",
+      kind: "AUDIO",
+      status: "UPLOADING",
+      content_type: "audio/mp4",
+      byte_size: 4,
+      part_count: 1,
+      sha256: "a".repeat(64),
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    }));
+    const partPath = `${assetPath}/parts/0000`;
+    await assertSucceeds(setDoc(doc(workerDb(), partPath), {
+      owner_uid: "owner-a",
+      asset_key: assetKey,
+      part_index: 0,
+      byte_size: 4,
+      payload: Bytes.fromUint8Array(new Uint8Array([1, 2, 3, 4])),
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(doc(workerDb(), assetPath), {
+      status: "READY",
+      updated_at: serverTimestamp(),
+    }));
+
+    await assertSucceeds(getDoc(doc(ownerDb(), partPath)));
+    await assertFails(getDoc(doc(ownerDb("owner-b"), partPath)));
+    await assertFails(getDoc(doc(environment.unauthenticatedContext().firestore(), partPath)));
+
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: Timestamp.now(),
+    });
+    await assertFails(getDoc(doc(workerDb(), partPath)));
   });
 
   it("allows task lease fields but blocks progress and unrelated task fields", async () => {
@@ -395,9 +467,66 @@ describe("worker permissions", () => {
       attempt_id: 2,
       lease_token: "current-secure-lease-token",
       deletion_generation: 3,
+      storage_mode: "PUBLIC_GITHUB",
+      asset_id: 10,
+      asset_url: "https://example.test/audio.m4a",
+      timeline_asset_id: 11,
+      timeline_url: "https://example.test/timeline.json.gz",
     };
     await assertFails(setDoc(reference, { ...valid, lease_token: "old-secure-lease-token" }));
     await assertSucceeds(setDoc(reference, valid));
+  });
+
+  it("creates private READY audio only from completed owner assets", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    await seed("users/owner-a/generationRequests/task-private", {
+      ...taskData("owner-a", "task-private"),
+      status: "UPLOADING",
+      attempt_id: 1,
+      lease_owner: "worker-a",
+      lease_token: "private-secure-lease-token",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+    });
+    const audioKey = "a".repeat(64);
+    const timelineKey = "b".repeat(64);
+    await seed(`users/owner-a/privateAssets/${audioKey}`, {
+      owner_uid: "owner-a", asset_key: audioKey, book_id: "book-a", kind: "AUDIO", status: "READY",
+    });
+    await seed(`users/owner-a/privateAssets/${timelineKey}`, {
+      owner_uid: "owner-a", asset_key: timelineKey, book_id: "book-a", kind: "TIMELINE", status: "READY",
+    });
+    const path = "users/owner-a/books/book-a/audioChunks/chunk-private";
+    const privateReady = {
+      owner_uid: "owner-a",
+      task_id: "task-private",
+      book_id: "book-a",
+      chunk_id: "chunk-private",
+      status: "READY",
+      attempt_id: 1,
+      lease_token: "private-secure-lease-token",
+      deletion_generation: 0,
+      storage_mode: "PRIVATE_FIRESTORE",
+      asset_id: null,
+      asset_url: null,
+      timeline_asset_id: null,
+      timeline_url: null,
+      private_audio_key: audioKey,
+      private_timeline_key: timelineKey,
+    };
+    await assertSucceeds(setDoc(doc(workerDb(), path), privateReady));
+    await assertSucceeds(getDoc(doc(ownerDb(), path)));
+    await assertFails(getDoc(doc(ownerDb("owner-b"), path)));
+
+    await assertFails(setDoc(
+      doc(workerDb(), "users/owner-a/books/book-a/audioChunks/chunk-forged"),
+      { ...privateReady, chunk_id: "chunk-forged", private_audio_key: "c".repeat(64) },
+    ));
   });
 
   it("uses a deletion generation barrier when repairing unavailable audio", async () => {
@@ -428,7 +557,11 @@ describe("worker permissions", () => {
       attempt_id: 1,
       lease_token: "old-secure-lease-token",
       deletion_generation: 3,
+      storage_mode: "PUBLIC_GITHUB",
       asset_id: 10,
+      asset_url: "https://example.test/audio.m4a",
+      timeline_asset_id: 11,
+      timeline_url: "https://example.test/timeline.json.gz",
       updated_at: Timestamp.now(),
     });
     const ownerReference = doc(ownerDb(), path);
@@ -559,6 +692,10 @@ describe("worker permissions", () => {
       asset_url: null,
       timeline_asset_id: null,
       timeline_url: null,
+      private_audio_key: null,
+      private_timeline_key: null,
+      private_audio_parts: 0,
+      private_timeline_parts: 0,
       deleted_at: serverTimestamp(),
       updated_at: serverTimestamp(),
     });

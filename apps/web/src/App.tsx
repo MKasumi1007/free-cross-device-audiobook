@@ -467,13 +467,13 @@ export function App() {
   }
 
   async function openRemoteBook(book: CloudBookSummary) {
-    if (book.publication_mode === "LOCAL_ONLY") {
-      setNotice("这本书的正文只在添加它的 Mac 上，请回到那台 Mac 阅读。");
+    if (!user) {
+      setNotice("请先登录，私有书只允许你的账号读取。");
       return;
     }
     setBusy(true);
     try {
-      const downloaded = await loadRemoteBook(book);
+      const downloaded = await loadRemoteBook(user.uid, book);
       await saveBook(downloaded);
       setBooks((current) => [downloaded, ...current.filter((item) => item.book_id !== downloaded.book_id)]);
       setSelectedBookId(downloaded.book_id);
@@ -730,7 +730,7 @@ export function App() {
                 <span className="book-format">{book.source_format}</span>
                 <span className="book-title">{book.title}</span>
                 <span className="book-author">{book.author || "作者未注明"}</span>
-                <span className="book-meta">{book.chapters.length} 章 · {cloudSummaryFor(book, cloudBooks) ? "已同步" : book.publication_mode === "LOCAL_ONLY" ? "仅本机" : "等待同步"}</span>
+                <span className="book-meta">{book.chapters.length} 章 · {cloudSummaryFor(book, cloudBooks) ? (book.publication_mode === "LOCAL_ONLY" ? "账号私有" : "已同步") : book.publication_mode === "LOCAL_ONLY" ? "等待私有同步" : "等待同步"}</span>
               </button>
             ))}
             {cloudOnlyBooks.map((book, index) => (
@@ -743,7 +743,7 @@ export function App() {
                 <span className="book-format">{book.source_format}</span>
                 <span className="book-title">{book.title}</span>
                 <span className="book-author">{book.author || "作者未注明"}</span>
-                <span className="book-meta">{book.chapter_count} 章 · {book.publication_mode === "LOCAL_ONLY" ? "正文仅在 Mac" : "云端书架"}</span>
+                <span className="book-meta">{book.chapter_count} 章 · {book.publication_mode === "LOCAL_ONLY" ? (book.text_status === "READY" ? "账号私有" : "等待生成") : "云端书架"}</span>
               </button>
             ))}
           </section>
@@ -757,17 +757,15 @@ export function App() {
             <h1>{selectedBook.title}</h1>
             <p className="book-byline">{selectedBook.author || "作者未注明"}</p>
             <div className="rights-badge">
-              {selectedBook.publication_mode === "LOCAL_ONLY" ? "仅在本机可用" : "已确认可公开"}
+              {selectedBook.publication_mode === "LOCAL_ONLY" ? "仅你的登录账号可访问" : "已确认可公开"}
             </div>
-            {selectedBook.publication_mode === "PUBLIC_RIGHTS_CONFIRMED" && (
-              <button
-                className="generate-audio-button"
-                onClick={() => void generateFiveHours()}
-                disabled={busy || !user || !activeMac}
-              >
-                生成约 5 小时音频
-              </button>
-            )}
+            <button
+              className="generate-audio-button"
+              onClick={() => void generateFiveHours()}
+              disabled={busy || !user || !activeMac}
+            >
+              {selectedBook.publication_mode === "LOCAL_ONLY" ? "私密生成约 5 小时音频" : "生成约 5 小时音频"}
+            </button>
             {(user || E2E_PLAYER_MODE) && (
               <button className="manage-audio-button" onClick={() => setShowAudioManager(true)}>
                 管理已生成音频
@@ -827,6 +825,7 @@ export function App() {
       {selectedBook && (
         <PlayerDock
           book={selectedBook}
+          ownerUid={user?.uid || ""}
           chunks={audioChunks}
           resumeSegmentId={resumeProgress?.segment_id || ""}
           resumeOffsetSeconds={resumeProgress?.audio_offset_seconds || 0}
@@ -855,7 +854,7 @@ export function App() {
                 checked={rightsConfirmed}
                 onChange={(event) => setRightsConfirmed(event.target.checked)}
               />
-              <span><b>我确认有权公开传播这本书</b><small>不勾选时只保存在本机，不会创建公开上传任务。</small></span>
+              <span><b>我确认有权公开传播这本书</b><small>不勾选时会标记为私有，只存入你的登录账号专属区域，绝不会上传到公开 GitHub。</small></span>
             </label>
             <div className="modal-actions">
               <button className="quiet-button" onClick={() => setShowImport(false)}>取消</button>

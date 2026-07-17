@@ -56,6 +56,7 @@ class AudioReconciler:
         return report
 
     def compare(self, records: list[RemoteAudioRecord]) -> ReconciliationReport:
+        records = [record for record in records if record.storage_mode == "PUBLIC_GITHUB"]
         missing: list[str] = []
         damaged: list[str] = []
         orphan: list[str] = []

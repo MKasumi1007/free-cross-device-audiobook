@@ -19,6 +19,7 @@ class GitHubRepositoryAssetPublisher:
     """Publishes browser-readable JSON assets to an isolated public branch."""
 
     BRANCH = "book-assets"
+    storage_mode = "PUBLIC_GITHUB"
 
     def __init__(self, repository: str) -> None:
         self.repository = repository
@@ -284,6 +285,8 @@ class GitHubRepositoryAssetPublisher:
 
 class GitHubAudiobookPublisher:
     """Keeps streamable audio in Releases and fetchable JSON in the data branch."""
+
+    storage_mode = "PUBLIC_GITHUB"
 
     def __init__(self, repository: str) -> None:
         self.audio = GitHubReleasePublisher(repository)

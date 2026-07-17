@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Callable
 
 from audiobook_core.models import ParsedBook
+from audiobook_core.models import PublicationMode
 from audiobook_core.planning import plan_generation_batch
 
 from .book_assets import BookTextPublisher
 from .cleanup import clean_expired_generation_files
 from .generation import ChunkJob, ChunkPipeline, GenerationError, SegmentGenerator, SegmentJob
 from .library import LocalLibrary
+from .private_assets import FirestorePrivateAssetPublisher
 from .repository_assets import GitHubAudiobookPublisher, GitHubRepositoryAssetPublisher
 from .reconciliation import AudioReconciler
 from .resources import ResourcePolicy
@@ -169,17 +171,40 @@ class MacGenerationWorker:
             self.tasks.transition(task, "PAUSED", pause_reason="WAITING_FOR_MAC")
             self.last_state = "WAITING_FOR_MAC"
             return True
+        expected_storage = (
+            "PRIVATE_FIRESTORE"
+            if book.publication_mode is PublicationMode.LOCAL_ONLY
+            else "PUBLIC_GITHUB"
+        )
+        if task.storage_mode != expected_storage:
+            self.tasks.transition(
+                task,
+                "FAILED_RETRYABLE",
+                error_code="STORAGE_MODE_MISMATCH",
+                error_message="书籍权利设置与任务存储方式不一致，已停止发布。",
+            )
+            self.last_state = "FAILED_RETRYABLE"
+            return True
         task = self.tasks.transition(task, "GENERATING")
         fence = RenewingFence(self.tasks, task)
         fence.start()
         try:
-            self._ensure_book_text(task.owner_uid, book)
+            self._ensure_book_text(fence.task, book)
             job = self._make_job(book, task, profile)
             generator = self._generator_for(profile)
+            publisher = (
+                FirestorePrivateAssetPublisher(
+                    self.tasks.client,
+                    task.owner_uid,
+                    task_id=task.task_id,
+                )
+                if book.publication_mode is PublicationMode.LOCAL_ONLY
+                else GitHubAudiobookPublisher(self.repository)
+            )
             pipeline = ChunkPipeline(
                 self.work_root,
                 generator,
-                GitHubAudiobookPublisher(self.repository),
+                publisher,
                 fence,
                 observer=fence,
             )
@@ -207,15 +232,32 @@ class MacGenerationWorker:
 
     def _process_deletion(self, deletion: CloudDeletion) -> bool:
         claimed = self.tasks.claim_deletion(deletion)
-        publisher = GitHubAudiobookPublisher(self.repository)
         try:
-            if claimed.asset_id is not None:
-                publisher.audio.delete_verified(claimed.asset_id)
-            if claimed.timeline_asset_id is not None and claimed.timeline_url:
-                publisher.data.delete_persisted(
-                    claimed.timeline_asset_id,
-                    claimed.timeline_url,
+            if claimed.storage_mode == "PRIVATE_FIRESTORE":
+                private = FirestorePrivateAssetPublisher(
+                    self.tasks.client,
+                    claimed.owner_uid,
+                    task_id=claimed.task_id,
                 )
+                if claimed.private_audio_key:
+                    private.delete_private(
+                        claimed.private_audio_key,
+                        part_count=claimed.private_audio_parts or None,
+                    )
+                if claimed.private_timeline_key:
+                    private.delete_private(
+                        claimed.private_timeline_key,
+                        part_count=claimed.private_timeline_parts or None,
+                    )
+            else:
+                publisher = GitHubAudiobookPublisher(self.repository)
+                if claimed.asset_id is not None:
+                    publisher.audio.delete_verified(claimed.asset_id)
+                if claimed.timeline_asset_id is not None and claimed.timeline_url:
+                    publisher.data.delete_persisted(
+                        claimed.timeline_asset_id,
+                        claimed.timeline_url,
+                    )
             self.tasks.complete_deletion(claimed)
             self.last_state = "AUDIO_DELETED"
             self.last_error = ""
@@ -281,14 +323,29 @@ class MacGenerationWorker:
             self._voice_version = profile.voice_version
         return self._generator
 
-    def _ensure_book_text(self, owner_uid: str, book: ParsedBook) -> None:
+    def _ensure_book_text(self, task: CloudTask, book: ParsedBook) -> None:
         if book.book_id in self._published_books:
             return
-        existing = self.tasks.book_text_asset(owner_uid, book.book_id)
+        existing = self.tasks.book_text_asset(task.owner_uid, book.book_id)
         if existing is None:
-            publisher = GitHubRepositoryAssetPublisher(self.repository)
-            asset = BookTextPublisher(self.work_root / "books", publisher).publish(book)
-            self.tasks.record_book_text(owner_uid, book, asset)
+            if book.publication_mode is PublicationMode.LOCAL_ONLY:
+                private_publisher = FirestorePrivateAssetPublisher(
+                    self.tasks.client,
+                    task.owner_uid,
+                    task_id=task.task_id,
+                )
+                asset = BookTextPublisher(
+                    self.work_root / "books",
+                    private_publisher,
+                    allow_local_only=True,
+                ).publish(book)
+            else:
+                public_publisher = GitHubRepositoryAssetPublisher(self.repository)
+                asset = BookTextPublisher(
+                    self.work_root / "books",
+                    public_publisher,
+                ).publish(book)
+            self.tasks.record_book_text(task.owner_uid, book, asset)
         self._published_books.add(book.book_id)
 
     @staticmethod

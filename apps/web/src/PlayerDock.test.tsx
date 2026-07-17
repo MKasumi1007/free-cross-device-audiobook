@@ -72,6 +72,7 @@ describe("PlayerDock", () => {
     const { container } = render(
       <PlayerDock
         book={demoBook}
+        ownerUid="owner-a"
         chunks={[chunk]}
         resumeSegmentId={chunk.start_segment_id}
         resumeOffsetSeconds={0}
@@ -84,7 +85,11 @@ describe("PlayerDock", () => {
         onNotice={vi.fn()}
       />,
     );
-    await waitFor(() => expect(loadChunkTimeline).toHaveBeenCalledWith(chunk, expect.any(AbortSignal)));
+    await waitFor(() => expect(loadChunkTimeline).toHaveBeenCalledWith(
+      "owner-a",
+      chunk,
+      expect.any(AbortSignal),
+    ));
     const audio = container.querySelector("audio")!;
     Object.defineProperty(audio, "duration", { configurable: true, value: 20 });
     fireEvent.loadedMetadata(audio);
@@ -107,6 +112,7 @@ describe("PlayerDock", () => {
     render(
       <PlayerDock
         book={demoBook}
+        ownerUid="owner-a"
         chunks={[]}
         resumeSegmentId=""
         resumeOffsetSeconds={0}

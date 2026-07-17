@@ -18,5 +18,11 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "parts",
+      "fieldPath": "payload",
+      "indexes": []
+    }
+  ]
 }

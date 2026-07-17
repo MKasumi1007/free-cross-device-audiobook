@@ -2,7 +2,7 @@ import type { ParsedBook } from "@audiobook/contracts";
 import type { CSSProperties } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import type { AudioChunk } from "./cloud";
+import { loadPrivateAssetBytes, type AudioChunk } from "./cloud";
 import {
   chunkForSegment,
   formatPlaybackTime,
@@ -28,6 +28,7 @@ export interface PlayerJumpRequest {
 
 interface PlayerDockProps {
   book: ParsedBook;
+  ownerUid: string;
   chunks: AudioChunk[];
   resumeSegmentId: string;
   resumeOffsetSeconds: number;
@@ -42,6 +43,7 @@ interface PlayerDockProps {
 
 export function PlayerDock({
   book,
+  ownerUid,
   chunks,
   resumeSegmentId,
   resumeOffsetSeconds,
@@ -66,6 +68,8 @@ export function PlayerDock({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [sleepMinutes, setSleepMinutes] = useState(0);
   const [playbackError, setPlaybackError] = useState("");
+  const [audioSource, setAudioSource] = useState("");
+  const [sourceLoading, setSourceLoading] = useState(false);
   const orderedChunks = readyChunks(book, chunks);
   const activeChunk = orderedChunks.find((chunk) => chunk.chunk_id === activeChunkId);
 
@@ -108,11 +112,53 @@ export function PlayerDock({
     }
     const controller = new AbortController();
     setTimeline(null);
-    void loadChunkTimeline(activeChunk, controller.signal)
+    void loadChunkTimeline(ownerUid, activeChunk, controller.signal)
       .then((value) => setTimeline(value))
       .catch(() => setTimeline(null));
     return () => controller.abort();
-  }, [activeChunk]);
+  }, [activeChunk, ownerUid]);
+
+  useEffect(() => {
+    if (!activeChunk) {
+      setAudioSource("");
+      setSourceLoading(false);
+      return;
+    }
+    if (activeChunk.storage_mode !== "PRIVATE_FIRESTORE") {
+      setAudioSource(activeChunk.asset_url || "");
+      setSourceLoading(false);
+      return;
+    }
+    if (!ownerUid || !activeChunk.private_audio_key) {
+      setAudioSource("");
+      setPlaybackError("这段私有音频缺少登录权限或文件索引。");
+      return;
+    }
+    const controller = new AbortController();
+    let objectUrl = "";
+    setAudioSource("");
+    setSourceLoading(true);
+    setPlaybackError("");
+    void loadPrivateAssetBytes(
+      ownerUid,
+      activeChunk.private_audio_key,
+      activeChunk.sha256,
+      controller.signal,
+    ).then((bytes) => {
+      if (controller.signal.aborted) return;
+      objectUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/mp4" }));
+      setAudioSource(objectUrl);
+    }).catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setPlaybackError("这段私有音频暂时无法读取，请确认已经登录。");
+    }).finally(() => {
+      if (!controller.signal.aborted) setSourceLoading(false);
+    });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [activeChunk, ownerUid]);
 
   useEffect(() => {
     if (!jumpRequest) return;
@@ -235,7 +281,11 @@ export function PlayerDock({
 
   async function togglePlayback() {
     const audio = audioRef.current;
-    if (!audio || !activeChunk) {
+    if (!audio || !activeChunk || !audioSource) {
+      if (sourceLoading) {
+        onNotice("正在安全读取当前私有音频，请稍等一下。");
+        return;
+      }
       onNotice(macOnline ? "第一段音频还在生成，请稍后再听。" : "还没有可播放音频，等待 Mac 开机后继续生成。");
       return;
     }
@@ -244,7 +294,9 @@ export function PlayerDock({
   }
 
   const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
-  const statusTitle = activeChunk
+  const statusTitle = sourceLoading
+    ? "正在读取私有音频"
+    : activeChunk
     ? (playing ? "正在朗读" : "已暂停")
     : (macOnline ? "正在准备音频" : "等待 Mac 开机");
 
@@ -252,7 +304,7 @@ export function PlayerDock({
     <footer className="player-dock" aria-label="听书播放器">
       <audio
         ref={audioRef}
-        src={activeChunk?.asset_url || undefined}
+        src={audioSource || undefined}
         preload="metadata"
         onLoadedMetadata={() => {
           const audio = audioRef.current;
@@ -274,7 +326,7 @@ export function PlayerDock({
         onError={() => setPlaybackError(navigator.onLine ? "这段音频无法读取。" : "网络已断开，已保留收听位置。")}
       />
       <button onClick={() => move(-15)} disabled={!activeChunk} aria-label="后退15秒">−15</button>
-      <button className="play-button" onClick={() => void togglePlayback()} disabled={!activeChunk} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button>
+      <button className="play-button" onClick={() => void togglePlayback()} disabled={!activeChunk || sourceLoading} aria-label={playing ? "暂停" : "播放"}>{playing ? "Ⅱ" : "▶"}</button>
       <button onClick={() => move(15)} disabled={!activeChunk} aria-label="前进15秒">+15</button>
       <div className="player-status">
         <b>{statusTitle}</b>

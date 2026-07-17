@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -65,6 +66,20 @@ class FakePublisher:
 
     def delete(self, _book_id: str, asset_id: int) -> None:
         self.deleted.append(asset_id)
+
+
+class FakePrivatePublisher(FakePublisher):
+    storage_mode = "PRIVATE_FIRESTORE"
+
+    def publish(self, book_id: str, path: Path, asset_name: str) -> PublishedAsset:
+        asset = super().publish(book_id, path, asset_name)
+        return replace(
+            asset,
+            url="",
+            storage_mode=self.storage_mode,
+            private_key=asset.sha256,
+            part_count=1,
+        )
 
 
 class FakeFence:
@@ -171,7 +186,7 @@ def test_stale_lease_after_upload_rolls_back_late_assets(tmp_path: Path) -> None
     assert not (tmp_path / "tasks/task-1/chunk-1/published.json").exists()
 
 
-def test_local_only_book_never_reaches_generator_or_publisher(tmp_path: Path) -> None:
+def test_local_only_book_never_reaches_public_publisher(tmp_path: Path) -> None:
     generator = FakeGenerator()
     publisher = FakePublisher()
     pipeline = ChunkPipeline(
@@ -183,9 +198,27 @@ def test_local_only_book_never_reaches_generator_or_publisher(tmp_path: Path) ->
     )
     with pytest.raises(GenerationError) as error:
         pipeline.run(make_job(PublicationMode.LOCAL_ONLY))
-    assert error.value.code == "RIGHTS_NOT_CONFIRMED"
+    assert error.value.code == "PRIVATE_STORAGE_REQUIRED"
     assert not generator.calls
     assert not publisher.published
+
+
+def test_local_only_book_can_generate_only_with_private_publisher(tmp_path: Path) -> None:
+    generator = FakeGenerator()
+    publisher = FakePrivatePublisher()
+    pipeline = ChunkPipeline(
+        tmp_path,
+        generator,
+        publisher,
+        FakeFence(),
+        encoder=FakeEncoder(),
+    )
+
+    result = pipeline.run(make_job(PublicationMode.LOCAL_ONLY))
+
+    assert result.duration_seconds == 7.5
+    assert len(publisher.published) == 2
+    assert generator.calls
 
 
 def test_stale_process_lock_is_recovered_after_restart(tmp_path: Path) -> None:

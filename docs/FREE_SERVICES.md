@@ -12,7 +12,7 @@ This document records official terms relevant to the hard requirement: no paymen
 | GitHub Releases | Allowed with public-data warning | Public release assets; no payment method needed for the planned public repository | Generated audio for rights-confirmed books |
 | GitHub public data branch | Allowed with public-data warning | Normal public repository storage; no paid add-on enabled | Rights-confirmed parsed text and timelines |
 | Standard GitHub-hosted Actions runner | CI/test/deploy only | Free for public repositories; larger runners are charged | CI, Pages, small TTS experiment |
-| Firebase Spark | Allowed after console verification | Official docs say no payment information is needed; quota exhaustion shuts off the product | Auth and Firestore metadata |
+| Firebase Spark | Allowed after console verification | Official docs say no payment information is needed; quota exhaustion shuts off the product | Auth, metadata, and owner-only private assets |
 | Firebase Blaze / Cloud Billing | Forbidden | Pay as you go and requires billing linkage | None |
 | Modal / rented GPU | Forbidden | Requires payment information or can charge by usage | None |
 
@@ -40,6 +40,9 @@ TTL deletes, point-in-time recovery, backups, restores, clones, additional datab
 - Firestore Security Rules and indexes were deployed only after Emulator tests passed.
 - The app records its own estimated Firestore reads/writes and degrades locally on network or quota errors; it never upgrades the plan.
 - The local safety thresholds stop at 45,000 estimated reads, 18,000 writes, or 18,000 deletes per UTC day, below the documented Spark quotas; the estimate resets the next day.
+- Private assets use 512 KiB payload parts because a Firestore document is limited to 1 MiB. The payload field is not indexed.
+- The Mac refuses a private logical asset over 32 MiB and refuses new private uploads after 700 MiB total, leaving headroom inside the 1 GiB free database quota.
+- The design uses neither paid TTL nor automated backups. Private audio remains until the user explicitly deletes it.
 
 The Firebase Web config in `config/firebase-public-config.json` is public client configuration. Firebase's official documentation says these Firebase API keys identify the project/app and are not backend authorization; Authentication and Security Rules enforce access. No OAuth token, refresh token, password, cookie, private key, or Firebase CLI credential is stored in the repository.
 
@@ -47,6 +50,7 @@ Sources:
 
 - <https://firebase.google.com/docs/projects/billing/firebase-pricing-plans>
 - <https://firebase.google.com/docs/firestore/pricing>
+- <https://firebase.google.com/docs/firestore/quotas>
 - <https://firebase.google.com/docs/projects/api-keys>
 
 ## GitHub Actions
@@ -86,6 +90,8 @@ Source: <https://docs.github.com/en/repositories/releasing-projects-on-github/ab
 Current documented limits include a 1 GiB published-site maximum, a 10-minute deployment timeout and a soft 100 GiB monthly bandwidth limit. Pages hosts only the static app shell. Rights-confirmed text and timeline JSON use an isolated public `book-assets` branch so browsers can read them with CORS; M4A audio remains in Releases. `LOCAL_ONLY` books and voice data never enter either location.
 
 Source: <https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits>
+
+`LOCAL_ONLY` content is not part of this public-data design. It uses authenticated Firestore reads and has no public GitHub URL.
 
 ## Current Verification State
 

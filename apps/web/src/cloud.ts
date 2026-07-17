@@ -17,7 +17,9 @@ import { getDeviceId } from "./device";
 import { getFirebaseServices } from "./firebase";
 import { classifyFirebaseError, type SyncError } from "./firebase-errors";
 import { cloudSyncIsPaused, cloudSyncPauseMessage, recordEstimatedUsage } from "./usage";
-import { fetchVerifiedGzipJson } from "./remote-asset";
+import { decodeGzipJson, fetchVerifiedGzipJson, verifySha256 } from "./remote-asset";
+
+const MAX_PRIVATE_ASSET_BYTES = 32 * 1024 * 1024;
 
 export interface CloudBookSummary {
   book_id: string;
@@ -35,6 +37,11 @@ export interface CloudBookSummary {
   text_asset_url?: string;
   text_sha256?: string;
   text_byte_size?: number;
+  private_text_key?: string;
+  private_text_name?: string;
+  private_text_sha256?: string;
+  private_text_byte_size?: number;
+  private_text_parts?: number;
   updated_at?: unknown;
 }
 
@@ -55,6 +62,11 @@ export interface AudioChunk {
   timeline_asset_id: number | null;
   timeline_url: string | null;
   timeline_sha256: string;
+  storage_mode?: "PUBLIC_GITHUB" | "PRIVATE_FIRESTORE";
+  private_audio_key?: string | null;
+  private_timeline_key?: string | null;
+  private_audio_parts?: number;
+  private_timeline_parts?: number;
   voice_version: string;
   deletion_generation: number;
   deletion_request_id?: string;
@@ -221,16 +233,95 @@ export function watchCloudBooks(
   }, (error) => onError(classifyFirebaseError(error)));
 }
 
-export async function loadRemoteBook(book: CloudBookSummary): Promise<ParsedBook> {
+interface FirestoreByteValue {
+  toUint8Array: () => Uint8Array;
+}
+
+function privatePayload(value: unknown): Uint8Array {
+  if (value && typeof value === "object" && "toUint8Array" in value) {
+    return (value as FirestoreByteValue).toUint8Array();
+  }
+  if (value instanceof Uint8Array) return value;
+  throw new Error("PRIVATE_ASSET_PART_INVALID");
+}
+
+export async function loadPrivateAssetBytes(
+  ownerUid: string,
+  assetKey: string,
+  expectedSha256: string,
+  signal?: AbortSignal,
+): Promise<Uint8Array<ArrayBuffer>> {
+  if (!/^[a-f0-9]{64}$/.test(assetKey)) throw new Error("PRIVATE_ASSET_KEY_INVALID");
+  const { db } = requireServices();
+  const assetPath = `users/${ownerUid}/privateAssets/${assetKey}`;
+  const metadataSnapshot = await getDoc(doc(db, assetPath));
+  recordEstimatedUsage({ reads: 1 });
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  if (!metadataSnapshot.exists()) throw new Error("PRIVATE_ASSET_UNAVAILABLE");
+  const metadata = metadataSnapshot.data() as {
+    owner_uid?: string;
+    status?: string;
+    byte_size?: number;
+    part_count?: number;
+    sha256?: string;
+  };
+  const byteSize = Number(metadata.byte_size || 0);
+  const partCount = Number(metadata.part_count || 0);
   if (
-    book.publication_mode !== "PUBLIC_RIGHTS_CONFIRMED"
-    || book.text_status !== "READY"
-    || !book.text_asset_url
-    || !book.text_sha256
+    metadata.owner_uid !== ownerUid
+    || metadata.status !== "READY"
+    || byteSize < 1
+    || byteSize > MAX_PRIVATE_ASSET_BYTES
+    || partCount < 1
+    || partCount > 64
   ) {
+    throw new Error("PRIVATE_ASSET_METADATA_INVALID");
+  }
+  const snapshot = await getDocs(collection(db, `${assetPath}/parts`));
+  recordEstimatedUsage({ reads: snapshot.size });
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  const parts = snapshot.docs
+    .map((item) => item.data() as { part_index?: number; payload?: unknown })
+    .sort((left, right) => Number(left.part_index) - Number(right.part_index));
+  if (parts.length !== partCount) throw new Error("PRIVATE_ASSET_PARTS_MISSING");
+  const combined = new Uint8Array(new ArrayBuffer(byteSize));
+  let offset = 0;
+  for (let index = 0; index < parts.length; index += 1) {
+    if (Number(parts[index]?.part_index) !== index) throw new Error("PRIVATE_ASSET_PARTS_INVALID");
+    const bytes = privatePayload(parts[index]?.payload);
+    if (offset + bytes.byteLength > combined.byteLength) throw new Error("PRIVATE_ASSET_SIZE_MISMATCH");
+    combined.set(bytes, offset);
+    offset += bytes.byteLength;
+  }
+  if (offset !== byteSize) throw new Error("PRIVATE_ASSET_SIZE_MISMATCH");
+  await verifySha256(combined.buffer, expectedSha256 || String(metadata.sha256 || ""));
+  return combined;
+}
+
+export async function loadRemoteBook(
+  ownerUid: string,
+  book: CloudBookSummary,
+): Promise<ParsedBook> {
+  if (book.text_status !== "READY") {
     throw new Error("这本书的手机正文还没有准备完成。");
   }
-  const payload = await fetchVerifiedGzipJson(book.text_asset_url, book.text_sha256);
+  let payload: unknown;
+  if (book.publication_mode === "LOCAL_ONLY") {
+    if (!book.private_text_key || !book.private_text_sha256) {
+      throw new Error("这本私有书的正文还在准备，请等第一段音频开始生成后再试。");
+    }
+    const bytes = await loadPrivateAssetBytes(
+      ownerUid,
+      book.private_text_key,
+      book.private_text_sha256,
+    );
+    payload = await decodeGzipJson(bytes.buffer);
+  } else {
+    if (!book.text_asset_url || !book.text_sha256) {
+      throw new Error("这本书的手机正文还没有准备完成。");
+    }
+    payload = await fetchVerifiedGzipJson(book.text_asset_url, book.text_sha256);
+  }
   return parsedBookSchema.parse(payload);
 }
 
@@ -488,6 +579,11 @@ export async function requestAudioDeletion(
         asset_url: current.asset_url,
         timeline_asset_id: current.timeline_asset_id,
         timeline_url: current.timeline_url,
+        storage_mode: current.storage_mode || "PUBLIC_GITHUB",
+        private_audio_key: current.private_audio_key || null,
+        private_timeline_key: current.private_timeline_key || null,
+        private_audio_parts: current.private_audio_parts || 0,
+        private_timeline_parts: current.private_timeline_parts || 0,
         deletion_generation: deletionGeneration,
         status: "QUEUED",
         attempt_count: 0,
@@ -604,9 +700,6 @@ export async function requestFiveHourGeneration(
   book: ParsedBook,
   voiceVersion: string,
 ): Promise<number> {
-  if (book.publication_mode !== "PUBLIC_RIGHTS_CONFIRMED") {
-    throw new Error("尚未确认这本书的传播权，不能公开生成音频。");
-  }
   if (!voiceVersion) throw new Error("请先设置并确认你的声音。");
   const { db } = requireServices();
   const requests = planGenerationRequests(book, voiceVersion);
@@ -633,6 +726,9 @@ export async function requestFiveHourGeneration(
         target_seconds: 600,
         chunk_seconds: 600,
         voice_version: voiceVersion,
+        storage_mode: book.publication_mode === "LOCAL_ONLY"
+          ? "PRIVATE_FIRESTORE"
+          : "PUBLIC_GITHUB",
         created_at: serverTimestamp(),
         updated_at: serverTimestamp(),
       });

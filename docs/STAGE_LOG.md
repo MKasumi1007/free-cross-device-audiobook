@@ -234,3 +234,27 @@ Completed: 2026-07-17.
 
 - A physical iPhone Safari playback and home-screen-install check remains a real-device gate.
 - Actual user-owned public audio should be deleted only through the explicit UI. Automated destructive verification uses disposable project-created synthetic assets only.
+
+## Owner-Only Private Library Extension
+
+Completed: 2026-07-17.
+
+### Completed
+
+- Reinterpreted `LOCAL_ONLY` as “never public”: private books can generate only through a `PRIVATE_FIRESTORE` publisher, while the pipeline rejects any attempt to route them to GitHub.
+- Added owner-only compressed book text, timeline, and M4A parts in Firestore with SHA-256 verification, 512 KiB documents, a 32 MiB logical-asset limit, and a 700 MiB total hard stop.
+- Added signed-in private book loading and current-chunk playback on desktop and mobile; switching chunks revokes the previous temporary object URL.
+- Extended two-phase deletion and regeneration to remove and verify private Firestore parts without touching books, progress, bookmarks, or voice data.
+- Kept public reconciliation limited to GitHub-backed records so private records are never treated as missing public assets.
+- Preserved the four-minute Qwen idle unload and successful-upload cleanup of local WAV, M4A, and timeline files.
+
+### Verification
+
+- Web: 20 tests passed, including private chunks without public URLs.
+- Firestore Emulator: 23 tests passed, including owner-only private bytes, cross-account denial, revoked-worker denial, completed-asset references, and forged private-key rejection.
+- Python: 65 tests passed, including private/public pipeline separation, chunking, reuse, deletion, metadata, and free-storage refusal.
+- TypeScript, Ruff, strict mypy, and Firestore index configuration passed local verification.
+
+### Remaining Real-Device Gate
+
+- Physical iPhone Safari login, add-to-home-screen, private audio playback, lock-screen controls, interruption handling, and resume still require the user's real phone.

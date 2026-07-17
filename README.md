@@ -2,7 +2,7 @@
 
 This repository implements the separately maintained v1.3 product specification.
 
-Current status: stage 5 remote-audio inventory, explicit deletion, safe regeneration, quota protection, reconciliation, and restart recovery are implemented and verified.
+Current status: stage 5 plus the owner-only private-library extension are implemented and verified. Physical iPhone acceptance remains outstanding.
 
 ## Fixed Decisions
 
@@ -12,6 +12,7 @@ Current status: stage 5 remote-audio inventory, explicit deletion, safe regenera
 - New books are added on the Mac only.
 - Real voice samples remain on the Mac by default.
 - Rights-confirmed parsed text and timelines may be stored on the public `book-assets` branch; generated audio may be stored as public GitHub Release assets.
+- `LOCAL_ONLY` text, timelines, and audio use owner-only Firestore documents and never enter GitHub.
 - Remote audio remains available until the user manually deletes it.
 
 No real book, voice sample, generated audiobook, credential, or model cache belongs in Git history.
@@ -43,8 +44,10 @@ No real book, voice sample, generated audiobook, credential, or model cache belo
 - Two-phase remote deletion with generation barriers, idempotent retries, and explicit irreversible confirmation.
 - Regeneration from the deleted chunk's preserved text cursor without deleting books, text, bookmarks, progress, or voice data.
 - Conservative Spark quota pauses, GitHub rate-limit backoff, six-hour local cleanup, and report-only remote reconciliation.
+- Owner-only Firestore assets split into 512 KiB parts, verified by SHA-256, capped at 32 MiB each and 700 MiB total.
+- Private book text and the current private audio chunk load on signed-in phones without the Mac or Qwen running.
 
-No TTS model is loaded while browsing, importing, logging in, syncing, playing existing audio, or waiting for work. The model starts only for an eligible generation task and unloads after idle time. The current downloaded EPUB remains local-only and cannot be queued for public publication without a separate rights confirmation.
+No TTS model is loaded while browsing, importing, logging in, syncing, playing existing audio, or waiting for work. The model starts only for an eligible generation task and unloads after four idle minutes. The current downloaded EPUB remains private: it may be generated only into the signed-in owner's Firestore area and cannot be published to GitHub without a separate rights confirmation.
 
 The active Firebase project remains on Spark (`$0`) with no Billing account. Only Authentication and Firestore are used; Storage, Functions, Firebase Hosting, Analytics, and Gemini are not enabled.
 

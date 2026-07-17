@@ -24,6 +24,7 @@ class CloudTask:
     start_segment_id: str | None
     target_seconds: float
     voice_version: str
+    storage_mode: str = "PUBLIC_GITHUB"
     pause_reason: str = ""
     lease_owner: str = ""
     lease_token: str = ""
@@ -46,6 +47,11 @@ class CloudDeletion:
     asset_url: str
     timeline_asset_id: int | None
     timeline_url: str
+    storage_mode: str = "PUBLIC_GITHUB"
+    private_audio_key: str = ""
+    private_timeline_key: str = ""
+    private_audio_parts: int = 0
+    private_timeline_parts: int = 0
     lease_owner: str = ""
     lease_token: str = ""
     lease_deadline: datetime | None = None
@@ -64,6 +70,7 @@ class RemoteAudioRecord:
     byte_size: int
     timeline_asset_id: int | None
     timeline_url: str
+    storage_mode: str = "PUBLIC_GITHUB"
 
 
 class FirestoreWorkerTasks:
@@ -282,12 +289,18 @@ class FirestoreWorkerTasks:
                         "asset_url": {"nullValue": None},
                         "timeline_asset_id": {"nullValue": None},
                         "timeline_url": {"nullValue": None},
+                        "private_audio_key": {"nullValue": None},
+                        "private_timeline_key": {"nullValue": None},
+                        "private_audio_parts": self._integer(0),
+                        "private_timeline_parts": self._integer(0),
                     },
                 },
                 "updateMask": {
                     "fieldPaths": [
                         "status", "asset_id", "asset_url",
                         "timeline_asset_id", "timeline_url",
+                        "private_audio_key", "private_timeline_key",
+                        "private_audio_parts", "private_timeline_parts",
                     ]
                 },
                 "updateTransforms": [
@@ -359,11 +372,20 @@ class FirestoreWorkerTasks:
         )
         if existing.get("name"):
             current = self._fields(existing)
+            matches_public = (
+                published.audio.storage_mode == "PUBLIC_GITHUB"
+                and current.get("asset_id") == published.audio.asset_id
+                and current.get("timeline_asset_id") == published.timeline.asset_id
+            )
+            matches_private = (
+                published.audio.storage_mode == "PRIVATE_FIRESTORE"
+                and current.get("private_audio_key") == published.audio.private_key
+                and current.get("private_timeline_key") == published.timeline.private_key
+            )
             if (
                 current.get("status") == "READY"
-                and current.get("asset_id") == published.audio.asset_id
                 and current.get("sha256") == published.audio.sha256
-                and current.get("timeline_asset_id") == published.timeline.asset_id
+                and (matches_public or matches_private)
             ):
                 return
             if not (
@@ -384,14 +406,43 @@ class FirestoreWorkerTasks:
             "start_segment_id": self._string(job.segments[0].segment_id),
             "end_segment_id": self._string(job.segments[-1].segment_id),
             "duration_seconds": self._double(published.duration_seconds),
-            "asset_id": self._integer(published.audio.asset_id),
-            "asset_url": self._string(published.audio.url),
+            "storage_mode": self._string(published.audio.storage_mode),
+            "asset_id": (
+                self._integer(published.audio.asset_id)
+                if published.audio.storage_mode == "PUBLIC_GITHUB"
+                else {"nullValue": None}
+            ),
+            "asset_url": (
+                self._string(published.audio.url)
+                if published.audio.storage_mode == "PUBLIC_GITHUB"
+                else {"nullValue": None}
+            ),
             "sha256": self._string(published.audio.sha256),
             "byte_size": self._integer(published.audio.byte_size),
             "codec": self._string("AAC-LC/M4A"),
-            "timeline_asset_id": self._integer(published.timeline.asset_id),
-            "timeline_url": self._string(published.timeline.url),
+            "timeline_asset_id": (
+                self._integer(published.timeline.asset_id)
+                if published.timeline.storage_mode == "PUBLIC_GITHUB"
+                else {"nullValue": None}
+            ),
+            "timeline_url": (
+                self._string(published.timeline.url)
+                if published.timeline.storage_mode == "PUBLIC_GITHUB"
+                else {"nullValue": None}
+            ),
             "timeline_sha256": self._string(published.timeline.sha256),
+            "private_audio_key": (
+                self._string(published.audio.private_key)
+                if published.audio.storage_mode == "PRIVATE_FIRESTORE"
+                else {"nullValue": None}
+            ),
+            "private_timeline_key": (
+                self._string(published.timeline.private_key)
+                if published.timeline.storage_mode == "PRIVATE_FIRESTORE"
+                else {"nullValue": None}
+            ),
+            "private_audio_parts": self._integer(published.audio.part_count),
+            "private_timeline_parts": self._integer(published.timeline.part_count),
             "voice_version": self._string(job.voice_version),
             "deletion_generation": self._integer(job.deletion_generation),
         }
@@ -427,7 +478,22 @@ class FirestoreWorkerTasks:
             allowed_statuses=frozenset({200, 404}),
         )
         fields = self._fields(value)
-        if fields.get("text_status") != "READY" or not fields.get("text_asset_url"):
+        if fields.get("text_status") != "READY":
+            return None
+        if fields.get("private_text_key"):
+            return PublishedAsset(
+                asset_id=int(str(fields["private_text_key"])[:15], 16),
+                name=str(fields.get("private_text_name") or ""),
+                url="",
+                byte_size=int(fields.get("private_text_byte_size") or 0),
+                sha256=str(fields.get("private_text_sha256") or ""),
+                created=False,
+                storage_mode="PRIVATE_FIRESTORE",
+                private_key=str(fields["private_text_key"]),
+                part_count=int(fields.get("private_text_parts") or 0),
+                content_type="application/gzip",
+            )
+        if not fields.get("text_asset_url"):
             return None
         try:
             return PublishedAsset(
@@ -449,15 +515,26 @@ class FirestoreWorkerTasks:
     ) -> None:
         identity = self.client.authenticate()
         path = f"users/{owner_uid}/books/{book.book_id}"
-        fields = {
-            "text_status": self._string("READY"),
-            "text_asset_id": self._integer(asset.asset_id),
-            "text_asset_name": self._string(asset.name),
-            "text_asset_url": self._string(asset.url),
-            "text_sha256": self._string(asset.sha256),
-            "text_byte_size": self._integer(asset.byte_size),
-            "text_schema_version": self._integer(1),
-        }
+        if asset.storage_mode == "PRIVATE_FIRESTORE":
+            fields = {
+                "text_status": self._string("READY"),
+                "private_text_key": self._string(asset.private_key),
+                "private_text_name": self._string(asset.name),
+                "private_text_sha256": self._string(asset.sha256),
+                "private_text_byte_size": self._integer(asset.byte_size),
+                "private_text_parts": self._integer(asset.part_count),
+                "text_schema_version": self._integer(1),
+            }
+        else:
+            fields = {
+                "text_status": self._string("READY"),
+                "text_asset_id": self._integer(asset.asset_id),
+                "text_asset_name": self._string(asset.name),
+                "text_asset_url": self._string(asset.url),
+                "text_sha256": self._string(asset.sha256),
+                "text_byte_size": self._integer(asset.byte_size),
+                "text_schema_version": self._integer(1),
+            }
         masks = list(fields)
         write = {
             "update": {"name": self._document_name(path), "fields": fields},
@@ -509,6 +586,7 @@ class FirestoreWorkerTasks:
                     else None
                 ),
                 timeline_url=str(fields.get("timeline_url") or ""),
+                storage_mode=str(fields.get("storage_mode") or "PUBLIC_GITHUB"),
             ))
         return records
 
@@ -615,6 +693,7 @@ class FirestoreWorkerTasks:
             start_segment_id=str(fields["start_segment_id"]) if fields.get("start_segment_id") else None,
             target_seconds=float(fields.get("target_seconds") or 18_000),
             voice_version=str(fields.get("voice_version") or ""),
+            storage_mode=str(fields.get("storage_mode") or "PUBLIC_GITHUB"),
             pause_reason=str(fields.get("pause_reason") or ""),
             lease_owner=str(fields.get("lease_owner") or ""),
             lease_token=str(fields.get("lease_token") or ""),
@@ -649,6 +728,11 @@ class FirestoreWorkerTasks:
                 else None
             ),
             timeline_url=str(values.get("timeline_url") or ""),
+            storage_mode=str(values.get("storage_mode") or "PUBLIC_GITHUB"),
+            private_audio_key=str(values.get("private_audio_key") or ""),
+            private_timeline_key=str(values.get("private_timeline_key") or ""),
+            private_audio_parts=int(values.get("private_audio_parts") or 0),
+            private_timeline_parts=int(values.get("private_timeline_parts") or 0),
             lease_owner=str(values.get("lease_owner") or ""),
             lease_token=str(values.get("lease_token") or ""),
             lease_deadline=lease_deadline if isinstance(lease_deadline, datetime) else None,

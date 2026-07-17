@@ -1,7 +1,7 @@
 import type { ParsedBook, TextSegment } from "@audiobook/contracts";
 
-import type { AudioChunk } from "./cloud";
-import { fetchVerifiedGzipJson } from "./remote-asset";
+import { loadPrivateAssetBytes, type AudioChunk } from "./cloud";
+import { decodeGzipJson, fetchVerifiedGzipJson } from "./remote-asset";
 
 export interface TimelineSegment {
   segment_id: string;
@@ -35,7 +35,13 @@ function segmentIndexes(book: ParsedBook): Map<string, number> {
 export function readyChunks(book: ParsedBook, chunks: AudioChunk[]): AudioChunk[] {
   const indexes = segmentIndexes(book);
   return chunks
-    .filter((chunk) => chunk.status === "READY" && Boolean(chunk.asset_url))
+    .filter((chunk) => (
+      chunk.status === "READY"
+      && (
+        Boolean(chunk.asset_url)
+        || (chunk.storage_mode === "PRIVATE_FIRESTORE" && Boolean(chunk.private_audio_key))
+      )
+    ))
     .sort((left, right) => (
       (indexes.get(left.start_segment_id) ?? Number.MAX_SAFE_INTEGER)
       - (indexes.get(right.start_segment_id) ?? Number.MAX_SAFE_INTEGER)
@@ -76,15 +82,28 @@ export function timelineSegmentAt(
 }
 
 export async function loadChunkTimeline(
+  ownerUid: string,
   chunk: AudioChunk,
   signal?: AbortSignal,
 ): Promise<ChunkTimeline> {
-  if (!chunk.timeline_url) throw new Error("TIMELINE_MISSING");
-  const timeline = await fetchVerifiedGzipJson(
-    chunk.timeline_url,
-    chunk.timeline_sha256,
-    signal,
-  ) as ChunkTimeline;
+  let timeline: ChunkTimeline;
+  if (chunk.storage_mode === "PRIVATE_FIRESTORE") {
+    if (!ownerUid || !chunk.private_timeline_key) throw new Error("PRIVATE_TIMELINE_MISSING");
+    const bytes = await loadPrivateAssetBytes(
+      ownerUid,
+      chunk.private_timeline_key,
+      chunk.timeline_sha256,
+      signal,
+    );
+    timeline = await decodeGzipJson(bytes.buffer) as ChunkTimeline;
+  } else {
+    if (!chunk.timeline_url) throw new Error("TIMELINE_MISSING");
+    timeline = await fetchVerifiedGzipJson(
+      chunk.timeline_url,
+      chunk.timeline_sha256,
+      signal,
+    ) as ChunkTimeline;
+  }
   if (timeline.book_id !== chunk.book_id || timeline.chunk_id !== chunk.chunk_id) {
     throw new Error("TIMELINE_ID_MISMATCH");
   }
