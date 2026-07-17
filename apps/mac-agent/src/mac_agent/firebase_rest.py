@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -86,6 +87,7 @@ class Identity:
     id_token: str
     refresh_token: str
     local_id: str
+    expires_at: datetime | None = None
 
 
 class FirebaseRestClient:
@@ -100,6 +102,7 @@ class FirebaseRestClient:
         self.token_store = token_store or MacOSKeychainTokenStore(config.project_id)
         self.transport = transport or UrllibTransport()
         self._identity: Identity | None = None
+        self._auth_lock = threading.Lock()
 
     def _json_request(
         self,
@@ -111,7 +114,7 @@ class FirebaseRestClient:
         form: dict[str, str] | None = None,
         id_token: str | None = None,
         allowed_statuses: frozenset[int] = frozenset({200}),
-    ) -> tuple[int, dict[str, Any]]:
+    ) -> tuple[int, Any]:
         headers: dict[str, str] = {}
         body: bytes | None = None
         if payload is not None:
@@ -134,18 +137,25 @@ class FirebaseRestClient:
         return status, value
 
     def authenticate(self) -> Identity:
-        if self._identity:
-            return self._identity
-        refresh_token = self.token_store.read()
-        if refresh_token:
-            try:
-                self._identity = self._refresh(refresh_token)
+        with self._auth_lock:
+            if self._identity and (
+                self._identity.expires_at is None
+                or self._identity.expires_at > datetime.now(UTC) + timedelta(minutes=1)
+            ):
                 return self._identity
-            except FirebaseRestError:
-                self.token_store.delete()
-        self._identity = self._create_anonymous_identity()
-        self.token_store.write(self._identity.refresh_token)
-        return self._identity
+            if self._identity:
+                self._identity = self._refresh(self._identity.refresh_token)
+                return self._identity
+            refresh_token = self.token_store.read()
+            if refresh_token:
+                try:
+                    self._identity = self._refresh(refresh_token)
+                    return self._identity
+                except FirebaseRestError:
+                    self.token_store.delete()
+            self._identity = self._create_anonymous_identity()
+            self.token_store.write(self._identity.refresh_token)
+            return self._identity
 
     def _create_anonymous_identity(self) -> Identity:
         _, value = self._json_request(
@@ -158,6 +168,7 @@ class FirebaseRestClient:
             id_token=str(value["idToken"]),
             refresh_token=str(value["refreshToken"]),
             local_id=str(value["localId"]),
+            expires_at=datetime.now(UTC) + timedelta(seconds=int(value.get("expiresIn", 3600))),
         )
 
     def _refresh(self, refresh_token: str) -> Identity:
@@ -174,6 +185,7 @@ class FirebaseRestClient:
             id_token=str(value["id_token"]),
             refresh_token=replacement,
             local_id=str(value["user_id"]),
+            expires_at=datetime.now(UTC) + timedelta(seconds=int(value.get("expires_in", 3600))),
         )
 
     def create_pairing_request(self, code: str) -> str:

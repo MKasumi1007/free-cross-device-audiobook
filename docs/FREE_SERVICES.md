@@ -92,3 +92,6 @@ Source: <https://docs.github.com/en/pages/getting-started-with-github-pages/gith
 - Real Google web login and real Mac-to-owner pairing were completed successfully on 2026-07-17.
 - The Agent refresh token was verified present in macOS Keychain without printing its value.
 - Authorized domains currently include localhost development and the planned `mkasumi1007.github.io` Pages domain.
+- A project-created synthetic Qwen smoke asset was published to a public GitHub Release, downloaded in full, hash/size checked, and fetched with a real HTTP `206` Range response.
+- The production Mac worker uses local CPU/RAM only; its power and memory guard pauses work rather than requesting paid compute.
+- The Firebase project still uses only Spark Authentication and Firestore. No Storage, Functions, Hosting, Billing, Blaze, or payment method was added for stage 3.

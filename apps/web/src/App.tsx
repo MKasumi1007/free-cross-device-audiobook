@@ -2,10 +2,20 @@ import type { Chapter, ParsedBook, TextSegment } from "@audiobook/contracts";
 import type { User } from "firebase/auth";
 import { useEffect, useRef, useState } from "react";
 
-import { chooseBookOnMac, startPairingOnMac } from "./agent";
+import {
+  chooseBookOnMac,
+  chooseVoiceOnMac,
+  confirmVoice,
+  getVoiceStatus,
+  startPairingOnMac,
+  startVoicePreview,
+  voicePreviewUrl,
+  type VoiceStatus,
+} from "./agent";
 import { signInWithGoogle, signOutCurrentUser, watchAuth } from "./auth";
 import {
   loadCloudProgress,
+  requestFiveHourGeneration,
   saveProgressOptimistically,
   syncBookMetadata,
   watchCloudBooks,
@@ -62,6 +72,9 @@ export function App() {
   const [showImport, setShowImport] = useState(false);
   const [showPairing, setShowPairing] = useState(false);
   const [showDisconnectMac, setShowDisconnectMac] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
   const [pairingCode, setPairingCode] = useState("");
   const [workerLinks, setWorkerLinks] = useState<WorkerLink[]>([]);
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
@@ -127,6 +140,29 @@ export function App() {
     }
     return watchMacAgents(user.uid, setWorkerLinks, (error) => setNotice(error.message));
   }, [user]);
+
+  useEffect(() => {
+    if (!canAdd) return;
+    let active = true;
+    let timer = 0;
+    const refresh = async () => {
+      try {
+        const status = await getVoiceStatus();
+        if (!active) return;
+        setVoiceStatus(status);
+        if (status.preview.state === "GENERATING") {
+          timer = window.setTimeout(() => void refresh(), 5000);
+        }
+      } catch {
+        if (active) setVoiceStatus(null);
+      }
+    };
+    void refresh();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [canAdd, showVoice, voiceStatus?.preview.state]);
 
   const selectedBook = books.find((book) => book.book_id === selectedBookId);
   const selectedChapter = selectedBook?.chapters.find((chapter) => chapter.chapter_id === selectedChapterId)
@@ -307,6 +343,73 @@ export function App() {
     }
   }
 
+  async function chooseVoice() {
+    if (!voiceTranscript.trim()) {
+      setNotice("请先填写录音中说的准确文字。");
+      return;
+    }
+    setBusy(true);
+    setNotice("正在等待你选择 10 到 30 秒的声音录音...");
+    try {
+      const status = await chooseVoiceOnMac(voiceTranscript);
+      if (status) {
+        setVoiceStatus(status);
+        setNotice("声音已安全保存在本机，现在可以生成试听。");
+      } else {
+        setNotice("没有选择声音文件。");
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "声音设置没有完成。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateVoicePreview() {
+    setBusy(true);
+    try {
+      setVoiceStatus(await startVoicePreview());
+      setNotice("正在用你的声音生成约一分钟试听，可以先做别的事。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "试听没有开始。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function acceptVoice() {
+    if (!voiceStatus?.voice_version) return;
+    setBusy(true);
+    try {
+      setVoiceStatus(await confirmVoice(voiceStatus.voice_version));
+      setShowVoice(false);
+      setNotice("声音已确认，以后的书会自动复用这个声音和语气。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "声音确认没有完成。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateFiveHours() {
+    if (!user || !selectedBook || !voiceStatus?.voice_version || !voiceStatus.confirmed) {
+      setShowVoice(true);
+      setNotice("请先设置并确认你的声音。");
+      return;
+    }
+    setBusy(true);
+    try {
+      const count = await requestFiveHourGeneration(user.uid, selectedBook, voiceStatus.voice_version);
+      setNotice(count
+        ? `已安排 ${count} 个音频块，第一块完成后就能开始听。`
+        : "这批音频已经安排过，不会重复生成。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "生成任务没有创建成功。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function openChapter(chapter: Chapter) {
     setSelectedChapterId(chapter.chapter_id);
     setSelectedSegmentId(chapter.segments[0]?.segment_id || "");
@@ -347,6 +450,7 @@ export function App() {
           {firebaseConfigured && !user && <button className="quiet-button header-button" onClick={() => void logIn()}>登录同步</button>}
           {user && canAdd && !activeMac && <button className="quiet-button header-button" onClick={() => void connectMacAutomatically()}>连接这台 Mac</button>}
           {user && canAdd && activeMac && <button className="quiet-button header-button is-connected" onClick={() => setShowDisconnectMac(true)}>Mac 已连接</button>}
+          {canAdd && <button className="quiet-button header-button" onClick={() => setShowVoice(true)}>{voiceStatus?.confirmed ? "声音已设置" : "我的声音"}</button>}
           {user && <button className="account-button" onClick={() => void signOutCurrentUser()} title="点击退出登录">{user.photoURL ? <img src={user.photoURL} alt="" /> : "我"}</button>}
           {canAdd && (
             <button className="add-book-button" onClick={() => setShowImport(true)}>
@@ -406,6 +510,15 @@ export function App() {
             <div className="rights-badge">
               {selectedBook.publication_mode === "LOCAL_ONLY" ? "仅在本机可用" : "已确认可公开"}
             </div>
+            {selectedBook.publication_mode === "PUBLIC_RIGHTS_CONFIRMED" && (
+              <button
+                className="generate-audio-button"
+                onClick={() => void generateFiveHours()}
+                disabled={busy || !user || !activeMac}
+              >
+                生成约 5 小时音频
+              </button>
+            )}
             <nav className="toc-list" aria-label="目录">
               {selectedBook.chapters.map((chapter) => (
                 <button
@@ -512,6 +625,46 @@ export function App() {
               <button className="quiet-button" onClick={() => setShowDisconnectMac(false)}>保持连接</button>
               <button className="primary-button" onClick={() => void disconnectMac()} disabled={busy}>确认断开</button>
             </div>
+          </section>
+        </div>
+      )}
+
+      {showVoice && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="import-modal voice-modal" role="dialog" aria-modal="true" aria-labelledby="voice-title">
+            <span className="modal-kicker">只保存在这台 Mac</span>
+            <h2 id="voice-title">设置我的声音</h2>
+            {!voiceStatus?.configured ? (
+              <>
+                <p>准备一段 10 到 30 秒的清晰录音，并填写录音中一字不差的对应文字。</p>
+                <textarea
+                  className="voice-transcript"
+                  value={voiceTranscript}
+                  onChange={(event) => setVoiceTranscript(event.target.value)}
+                  placeholder="在这里填写录音中说的全部文字"
+                  rows={5}
+                />
+                <div className="modal-actions">
+                  <button className="quiet-button" onClick={() => setShowVoice(false)}>稍后再说</button>
+                  <button className="primary-button" onClick={() => void chooseVoice()} disabled={busy || !voiceTranscript.trim()}>选择录音</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p>{voiceStatus.confirmed ? "这个声音已经确认，可以直接用来生成听书音频。" : "录音已准备好。先生成并听一下试听，满意后再确认。"}</p>
+                {voiceStatus.preview.state === "GENERATING" && <div className="voice-progress"><i />正在生成试听，完成后这里会自动出现播放器...</div>}
+                {voiceStatus.preview_available && voiceStatus.voice_version && (
+                  <audio className="voice-audio" controls preload="metadata" src={voicePreviewUrl(voiceStatus.voice_version)} />
+                )}
+                {voiceStatus.preview.error && <p className="voice-error">{voiceStatus.preview.error}</p>}
+                <div className="modal-actions">
+                  <button className="quiet-button" onClick={() => { setVoiceStatus(null); setVoiceTranscript(""); }}>换一个录音</button>
+                  <button className="quiet-button" onClick={() => setShowVoice(false)}>关闭</button>
+                  {!voiceStatus.confirmed && voiceStatus.preview.state !== "GENERATING" && <button className="quiet-button" onClick={() => void generateVoicePreview()} disabled={busy}>生成试听</button>}
+                  {!voiceStatus.confirmed && voiceStatus.preview_available && <button className="primary-button" onClick={() => void acceptVoice()} disabled={busy}>满意，使用这个声音</button>}
+                </div>
+              </>
+            )}
           </section>
         </div>
       )}

@@ -36,8 +36,22 @@ vi.mock("./pairing", () => ({
   }),
 }));
 
+vi.mock("./agent", () => ({
+  chooseBookOnMac: vi.fn(async () => null),
+  chooseVoiceOnMac: vi.fn(async () => null),
+  confirmVoice: vi.fn(),
+  getVoiceStatus: vi.fn(async () => ({
+    configured: false,
+    preview: { state: "IDLE", error: "", model_loaded: false },
+  })),
+  startPairingOnMac: vi.fn(),
+  startVoicePreview: vi.fn(),
+  voicePreviewUrl: vi.fn(() => "http://127.0.0.1:17832/v1/voice/preview.m4a"),
+}));
+
 vi.mock("./cloud", () => ({
   loadCloudProgress: vi.fn(async () => null),
+  requestFiveHourGeneration: vi.fn(async () => 2),
   saveProgressOptimistically: vi.fn(),
   syncBookMetadata: vi.fn(async () => undefined),
   watchCloudBooks: vi.fn(() => () => undefined),
@@ -78,6 +92,9 @@ describe("书架响应式入口", () => {
     expect(await screen.findByText("山窗小札")).toBeInTheDocument();
     expect(screen.getAllByText("第一章 清晨")).toHaveLength(2);
     expect(screen.getAllByText(/窗纸先有了温度/)).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "我的声音" }));
+    expect(screen.getByRole("heading", { name: "设置我的声音" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("在这里填写录音中说的全部文字")).toBeInTheDocument();
   });
 
   it("手机视口不显示添加按钮，并提示去 Mac 添加", async () => {

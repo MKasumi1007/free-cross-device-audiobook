@@ -25,11 +25,14 @@ This exception applies only to the Firebase-provisioned Web client configuration
 - Verification codes, private keys, cookies, sessions and macOS Keychain data.
 - Firebase or GitHub account credentials.
 - Real voice samples unless the user separately confirms publication risk.
+- Voice transcripts, source paths, voice hashes, preview files, and normalization artifacts.
 - Books and generated audio without a rights confirmation.
 
 ## Voice Default
 
-The real voice sample stays on the Mac. The Mac Agent uses it locally and uploads only the generated audio. Cloud voice encryption and Actions voice generation are not v1 requirements.
+The real voice sample and its transcript stay on the Mac in private application storage. The browser can read only safe status fields and a loopback preview stream; it never receives a source path, transcript, hash, or credential. The Mac Agent uses the confirmed voice locally and uploads only generated audio for a rights-confirmed book. Cloud voice encryption and Actions voice generation are not v1 requirements.
+
+Generation is denied for `LOCAL_ONLY` books. The currently imported downloaded EPUB remains in that state, so neither its text nor any derived audio is uploaded.
 
 ## Public-Asset Warning
 

@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 audiobook-mac-agent = "mac_agent.main:main"
+audiobook-install-agent = "mac_agent.launchd:main"
 
 [tool.setuptools.packages.find]
 where = ["services/audiobook-core/src", "apps/mac-agent/src"]

@@ -91,6 +91,8 @@ body::before {
 .toc-panel h1 { margin: 0; font-size: 32px; font-weight: 500; }
 .book-byline { margin: 9px 0 16px; color: var(--muted); }
 .rights-badge { display: inline-block; margin-bottom: 34px; padding: 5px 9px; border-radius: 4px; color: var(--cinnabar-dark); background: rgba(164,59,43,.09); font-size: 11px; }
+.generate-audio-button { width: 100%; margin: -20px 0 24px; padding: 12px 14px; border: 0; border-radius: 14px; color: #fffaf0; background: linear-gradient(135deg, #a8432d, #d27a42); font: 700 14px/1.2 "Songti SC", "STSong", serif; box-shadow: 0 10px 24px rgba(127,47,29,.2); cursor: pointer; }
+.generate-audio-button:disabled { opacity: .45; cursor: default; }
 .toc-list { display: grid; gap: 7px; }
 .toc-list button { display: grid; grid-template-columns: 30px 1fr; gap: 2px 7px; padding: 12px 10px; border: 0; border-left: 2px solid transparent; background: transparent; text-align: left; cursor: pointer; }
 .toc-list button > span { grid-row: 1 / 3; color: #9d9283; font-family: ui-monospace, monospace; font-size: 11px; }
@@ -132,6 +134,13 @@ body::before {
 .primary-button:disabled { opacity: .55; }
 .pairing-input { width: 100%; margin: 22px 0 28px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 12px; outline: none; background: rgba(255,255,255,.45); font-family: ui-monospace, monospace; font-size: 24px; letter-spacing: .3em; text-align: center; }
 .pairing-input:focus { border-color: var(--cinnabar); box-shadow: 0 0 0 3px rgba(164,59,43,.08); }
+.voice-modal { max-width: 560px; }
+.voice-transcript { box-sizing: border-box; width: 100%; resize: vertical; margin: 10px 0 24px; border: 1px solid var(--line); border-radius: 14px; padding: 14px; color: var(--ink); background: #fffdf7; font: 16px/1.7 "Kaiti SC", "STKaiti", serif; }
+.voice-audio { width: 100%; margin: 14px 0 24px; }
+.voice-progress { margin: 16px 0; padding: 14px; border-radius: 14px; color: #735039; background: #f5ead7; }
+.voice-progress i { display: inline-block; width: 9px; height: 9px; margin-right: 9px; border-radius: 50%; background: #bc5a38; animation: voice-pulse 1.2s ease-in-out infinite; }
+.voice-error { color: #9c3428; }
+@keyframes voice-pulse { 50% { transform: scale(1.65); opacity: .45; } }
 
 @media (max-width: 767px) {
   .app-shell { padding-bottom: 84px; }

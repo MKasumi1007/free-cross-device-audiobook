@@ -26,11 +26,13 @@ class TaskStatus(StrEnum):
 
 class PauseReason(StrEnum):
     WAITING_FOR_MAC = "WAITING_FOR_MAC"
+    WAITING_FOR_AC_POWER = "WAITING_FOR_AC_POWER"
     MEMORY_PRESSURE = "MEMORY_PRESSURE"
     OFFLINE = "OFFLINE"
     FREE_QUOTA = "FREE_QUOTA"
     RIGHTS_NOT_CONFIRMED = "RIGHTS_NOT_CONFIRMED"
     USER_PAUSED = "USER_PAUSED"
+    VOICE_VERSION_CHANGED = "VOICE_VERSION_CHANGED"
     GITHUB_LIMITED = "GITHUB_LIMITED"
 
 
@@ -140,6 +142,10 @@ def plan_generation_batch(
         duration = estimate_segment_seconds(segment, chars_per_second)
         if batch_seconds >= target_seconds and current:
             break
+        if current and current[-1].chapter_id != segment.chapter_id:
+            flush()
+            if batch_seconds >= target_seconds:
+                break
         if current and current_seconds + duration > chunk_seconds:
             flush()
             if batch_seconds >= target_seconds:

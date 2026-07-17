@@ -1,6 +1,6 @@
 # Local Development Setup
 
-Normal users should not need Terminal commands in the finished product. These commands are only for development while the one-click Mac launcher is still being built.
+Normal use does not require Terminal. The installed private LaunchAgent starts the Mac Agent after login, and the web page provides book, voice, and generation controls. The commands below are only for development or repair.
 
 ```bash
 python3 -m venv .venv
@@ -13,6 +13,14 @@ Start the local Agent without loading the TTS model:
 ```bash
 .venv/bin/audiobook-mac-agent
 ```
+
+Install or repair the background Agent:
+
+```bash
+.venv/bin/audiobook-install-agent
+```
+
+The installer copies the executable runtime and public Firebase configuration under `~/Library/Application Support/听见书页/`, writes a private LaunchAgent property list, and starts it. It does not copy books, voice samples, credentials, or generated audio into the repository.
 
 Start the web development server in another process:
 
@@ -32,6 +40,14 @@ Current development flow:
 4. Automatic localhost pairing is preferred. If it is unavailable, enter the six-digit code shown by the Agent.
 5. A connected Agent appears as `Mac 已连接`; clicking it opens the explicit revocation dialog.
 
+Normal voice and generation flow:
+
+1. Open `我的声音`, select a clear 10-30 second recording, and enter exactly what was spoken.
+2. Listen to the private preview and click `确认使用这个声音` only after it sounds right.
+3. Open a rights-confirmed book and click `生成约 5 小时音频`.
+4. The background Agent processes one task at a time. It pauses instead of loading Qwen when the Mac is on battery or has less than 2 GiB available memory.
+5. A failed or restarted task resumes from its segment checkpoint; completed public assets are verified before Firestore marks them ready.
+
 The anonymous Agent refresh token is stored only in macOS Keychain. Real books, voice samples, parsed text, generated audio, OAuth tokens, cookies, and account credentials must never be added to Git.
 
-Firebase Hosting is intentionally unused. The production static site will use GitHub Pages; long-form audio generation remains local to the Mac.
+Firebase Hosting is intentionally unused. The production static site uses GitHub Pages; long-form audio generation remains local to the Mac. Remote audio is retained until an explicit manual deletion and is never moved to a paid service automatically.

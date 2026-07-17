@@ -119,3 +119,38 @@ Completed: 2026-07-17.
 ### Next
 
 - Stage 3: local voice confirmation, checkpointed Mac generation, ten-minute audio chunks, GitHub Release publication, integrity verification, and idle memory release.
+
+## Stage 3: Voice, Generation, and Publication
+
+Completed: 2026-07-17.
+
+### Completed
+
+- Added private Mac voice selection for 10-30 second samples, 24 kHz mono normalization, transcript-bound versioning, preview, and explicit confirmation.
+- Migrated the previously approved Qwen voice preview into private Application Support storage without publishing the sample or transcript.
+- Added resumable segment checkpoints, chapter-safe roughly ten-minute M4A chunks, gzipped timelines, retry recovery, and stale-lock cleanup.
+- Added a single Firestore worker with lease deadlines, fencing tokens, heartbeats, expired-task recovery, and idempotent ready metadata.
+- Added AC-power and 2 GiB available-memory guards so the model is not loaded under unsafe conditions; the persistent Qwen child unloads after idle time.
+- Added stable GitHub Release asset names, byte/hash verification, full-download verification, rollback on partial publication, and Range-request checks.
+- Added web voice controls and a deterministic `生成约 5 小时音频` queue that does not reset existing tasks.
+- Installed a self-contained private LaunchAgent runtime under macOS Application Support so the Agent starts without Terminal and avoids Documents-folder permission failures.
+- Kept the user's current downloaded EPUB `LOCAL_ONLY`; no real book text, voice sample, transcript, or derived audio was published.
+
+### Verification
+
+- Unit and integration tests cover voice privacy, generation checkpoints, resource guards, process lifetime, cleanup, leases, Release publication, launchd installation, and web queue controls.
+- Firestore Emulator rules reject worker theft and stale writes while allowing a correctly fenced expired-task recovery.
+- A synthetic project-created audio/timeline pair was uploaded to a public Release, downloaded, hash/size checked, and served a real `206` Range response.
+- The live Agent reports linked and configured while Qwen remains unloaded during idle operation.
+- A fresh long preview was intentionally deferred when the memory guard detected less than 2 GiB available; the previously approved real Qwen preview remains available.
+
+### Free Services and Limits
+
+- Firebase remains Spark with no Billing account or payment method; only Authentication and Firestore are used.
+- GitHub Pages, public Releases, and standard public-repository Actions remain the only remote services.
+- Production speech generation uses the user's Mac. The app pauses on local resource pressure and never falls back to a paid GPU.
+- Public Release assets remain available until explicit manual deletion; deletion cannot revoke copies already downloaded by others.
+
+### Next
+
+- Stage 4: bookshelf playback, chapter/timeline navigation, resume position, mobile controls, offline behavior, and real-device playback verification.

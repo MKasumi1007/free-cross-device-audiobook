@@ -34,6 +34,19 @@ service cloud.firestore {
         && get(linkPath).data.scopes.hasAll(['generation']);
     }
 
+    function activeTaskLease(ownerUid, taskId) {
+      let taskPath = /databases/$(database)/documents/users/$(ownerUid)/generationRequests/$(taskId);
+      return exists(taskPath)
+        && get(taskPath).data.owner_uid == ownerUid
+        && get(taskPath).data.task_id == taskId
+        && get(taskPath).data.status == 'UPLOADING'
+        && get(taskPath).data.attempt_id == request.resource.data.attempt_id
+        && get(taskPath).data.lease_owner == request.auth.uid
+        && get(taskPath).data.lease_token == request.resource.data.lease_token
+        && get(taskPath).data.lease_deadline > request.time
+        && get(taskPath).data.deletion_generation == request.resource.data.deletion_generation;
+    }
+
     function ownerUpdateOnly(ownerUid, fields) {
       return isOwner(ownerUid)
         && requestKeepsOwner(ownerUid)
@@ -70,15 +83,35 @@ service cloud.firestore {
     function validWorkerTransition() {
       return (resource.data.status == 'QUEUED' && request.resource.data.status == 'LEASED')
         || (resource.data.status == 'FAILED_RETRYABLE' && request.resource.data.status == 'LEASED')
-        || (resource.data.status == 'LEASED' && request.resource.data.status in ['LEASED', 'GENERATING', 'FAILED_RETRYABLE'])
-        || (resource.data.status == 'GENERATING' && request.resource.data.status in ['GENERATING', 'ENCODING', 'FAILED_RETRYABLE'])
-        || (resource.data.status == 'ENCODING' && request.resource.data.status in ['ENCODING', 'UPLOADING', 'FAILED_RETRYABLE'])
-        || (resource.data.status == 'UPLOADING' && request.resource.data.status in ['UPLOADING', 'READY', 'FAILED_RETRYABLE']);
+        || (
+          resource.data.status == 'PAUSED'
+          && resource.data.pause_reason in ['WAITING_FOR_AC_POWER', 'MEMORY_PRESSURE', 'WAITING_FOR_MAC']
+          && request.resource.data.status == 'LEASED'
+        )
+        || (
+          resource.data.status in ['LEASED', 'GENERATING', 'ENCODING', 'UPLOADING']
+          && resource.data.lease_deadline <= request.time
+          && request.resource.data.status == 'LEASED'
+        )
+        || (resource.data.status == 'LEASED' && request.resource.data.status in ['LEASED', 'GENERATING', 'PAUSED', 'FAILED_RETRYABLE'])
+        || (resource.data.status == 'GENERATING' && request.resource.data.status in ['GENERATING', 'ENCODING', 'PAUSED', 'FAILED_RETRYABLE'])
+        || (resource.data.status == 'ENCODING' && request.resource.data.status in ['ENCODING', 'UPLOADING', 'PAUSED', 'FAILED_RETRYABLE'])
+        || (resource.data.status == 'UPLOADING' && request.resource.data.status in ['UPLOADING', 'READY', 'PAUSED', 'FAILED_RETRYABLE']);
     }
 
     function validWorkerLease() {
       let isClaim = request.resource.data.status == 'LEASED'
-        && resource.data.status in ['QUEUED', 'FAILED_RETRYABLE'];
+        && (
+          resource.data.status in ['QUEUED', 'FAILED_RETRYABLE']
+          || (
+            resource.data.status == 'PAUSED'
+            && resource.data.pause_reason in ['WAITING_FOR_AC_POWER', 'MEMORY_PRESSURE', 'WAITING_FOR_MAC']
+          )
+          || (
+            resource.data.status in ['LEASED', 'GENERATING', 'ENCODING', 'UPLOADING']
+            && resource.data.lease_deadline <= request.time
+          )
+        );
       return (
           isClaim
           && request.resource.data.attempt_id == resource.data.attempt_id + 1
@@ -86,6 +119,7 @@ service cloud.firestore {
           && request.resource.data.lease_token is string
           && request.resource.data.lease_token.size() >= 24
           && request.resource.data.lease_deadline > request.time
+          && request.resource.data.pause_reason == null
         ) || (
           !isClaim
           && request.resource.data.attempt_id == resource.data.attempt_id
@@ -148,7 +182,9 @@ service cloud.firestore {
             && requestKeepsOwner(ownerUid)
             && request.resource.data.book_id == bookId
             && request.resource.data.chunk_id == chunkId
-            && validTaskStatus(request.resource.data.status);
+            && request.resource.data.status == 'READY'
+            && request.resource.data.task_id is string
+            && activeTaskLease(ownerUid, request.resource.data.task_id);
           allow update: if activeWorkerFor(ownerUid)
             && requestKeepsOwner(ownerUid)
             && request.resource.data.book_id == resource.data.book_id
@@ -193,10 +229,17 @@ service cloud.firestore {
           && requestKeepsOwner(ownerUid)
           && request.resource.data.task_id == taskId
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'status', 'attempt_id', 'lease_owner', 'lease_token', 'lease_deadline',
-            'checkpoint_segment_id', 'checkpoint_order', 'error_code', 'error_message',
-            'updated_at'
+              'status', 'attempt_id', 'lease_owner', 'lease_token', 'lease_deadline',
+              'checkpoint_segment_id', 'checkpoint_order', 'error_code', 'error_message',
+              'pause_reason', 'updated_at'
           ])
+          && (
+            request.resource.data.status != 'PAUSED'
+            || request.resource.data.pause_reason in [
+              'USER_PAUSED', 'WAITING_FOR_AC_POWER', 'MEMORY_PRESSURE',
+              'WAITING_FOR_MAC', 'VOICE_VERSION_CHANGED'
+            ]
+          )
           && validWorkerTransition()
           && validWorkerLease()
         );

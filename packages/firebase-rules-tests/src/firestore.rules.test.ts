@@ -169,6 +169,7 @@ describe("worker permissions", () => {
       lease_owner: "worker-a",
       lease_token: "a-secure-lease-token-with-24-chars",
       lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      pause_reason: null,
       updated_at: serverTimestamp(),
     }));
     await assertFails(updateDoc(task, { priority: 999 }));
@@ -189,6 +190,146 @@ describe("worker permissions", () => {
     });
     await seed("users/owner-a/generationRequests/task-a", taskData("owner-a"));
     await assertFails(getDoc(doc(workerDb(), "users/owner-a/generationRequests/task-a")));
+  });
+
+  it("recovers only an expired lease and fences the old attempt", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    const taskPath = "users/owner-a/generationRequests/task-a";
+    await seed(taskPath, {
+      ...taskData("owner-a"),
+      status: "GENERATING",
+      attempt_id: 1,
+      lease_owner: "worker-a",
+      lease_token: "old-secure-lease-token-123456",
+      lease_deadline: Timestamp.fromMillis(Date.now() - 60_000),
+    });
+    const task = doc(workerDb(), taskPath);
+    await assertSucceeds(updateDoc(task, {
+      status: "LEASED",
+      attempt_id: 2,
+      lease_owner: "worker-a",
+      lease_token: "new-secure-lease-token-123456",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      pause_reason: null,
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(task, {
+      status: "GENERATING",
+      attempt_id: 1,
+      lease_owner: "worker-a",
+      lease_token: "old-secure-lease-token-123456",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      updated_at: serverTimestamp(),
+    }));
+  });
+
+  it("does not let a worker steal an unexpired lease", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    const taskPath = "users/owner-a/generationRequests/task-a";
+    await seed(taskPath, {
+      ...taskData("owner-a"),
+      status: "GENERATING",
+      attempt_id: 1,
+      lease_owner: "worker-a",
+      lease_token: "current-secure-lease-token",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+    });
+    await assertFails(updateDoc(doc(workerDb(), taskPath), {
+      status: "LEASED",
+      attempt_id: 2,
+      lease_owner: "worker-a",
+      lease_token: "stolen-secure-lease-token-123",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 240_000),
+      pause_reason: null,
+      updated_at: serverTimestamp(),
+    }));
+  });
+
+  it("resumes only automatic pauses and never a user pause", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    const automaticPath = "users/owner-a/generationRequests/automatic";
+    await seed(automaticPath, {
+      ...taskData("owner-a", "automatic"),
+      status: "PAUSED",
+      pause_reason: "MEMORY_PRESSURE",
+      attempt_id: 1,
+    });
+    await assertSucceeds(updateDoc(doc(workerDb(), automaticPath), {
+      status: "LEASED",
+      attempt_id: 2,
+      lease_owner: "worker-a",
+      lease_token: "resumed-secure-lease-token-123",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      pause_reason: null,
+      updated_at: serverTimestamp(),
+    }));
+
+    const userPath = "users/owner-a/generationRequests/user-paused";
+    await seed(userPath, {
+      ...taskData("owner-a", "user-paused"),
+      status: "PAUSED",
+      pause_reason: "USER_PAUSED",
+      attempt_id: 1,
+    });
+    await assertFails(updateDoc(doc(workerDb(), userPath), {
+      status: "LEASED",
+      attempt_id: 2,
+      lease_owner: "worker-a",
+      lease_token: "forbidden-secure-lease-token",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      pause_reason: null,
+      updated_at: serverTimestamp(),
+    }));
+  });
+
+  it("requires a matching active upload lease before creating READY audio", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    await seed("users/owner-a/generationRequests/task-a", {
+      ...taskData("owner-a"),
+      status: "UPLOADING",
+      attempt_id: 2,
+      lease_owner: "worker-a",
+      lease_token: "current-secure-lease-token",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      deletion_generation: 3,
+    });
+    const reference = doc(workerDb(), "users/owner-a/books/book-a/audioChunks/chunk-a");
+    const valid = {
+      owner_uid: "owner-a",
+      task_id: "task-a",
+      book_id: "book-a",
+      chunk_id: "chunk-a",
+      status: "READY",
+      attempt_id: 2,
+      lease_token: "current-secure-lease-token",
+      deletion_generation: 3,
+    };
+    await assertFails(setDoc(reference, { ...valid, lease_token: "old-secure-lease-token" }));
+    await assertSucceeds(setDoc(reference, valid));
   });
 });
 

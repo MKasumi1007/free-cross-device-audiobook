@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 from fastapi.testclient import TestClient
 
 from mac_agent.app import create_app
 from mac_agent.library import LocalLibrary
 from mac_agent.pairing import PairingCode
+from mac_agent.voice import VoiceRegistry
 
 
 class FakePicker:
@@ -31,6 +33,29 @@ class FakePairing:
 
     def is_linked(self) -> bool:
         return True
+
+
+class FakeVoiceRunner:
+    def run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "ffmpeg":
+            Path(command[-1]).write_bytes(b"normalized private voice")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "15.0\n", "")
+
+
+class FakePreviews:
+    def __init__(self) -> None:
+        self.starts = 0
+
+    def status(self) -> dict[str, str | bool]:
+        return {"state": "IDLE", "error": "", "model_loaded": False}
+
+    def start(self) -> dict[str, str | bool]:
+        self.starts += 1
+        return {"state": "GENERATING", "error": "", "model_loaded": True}
+
+    def unload(self) -> None:
+        return None
 
 
 ORIGIN = "http://127.0.0.1:5173"
@@ -135,3 +160,34 @@ def test_pairing_uses_one_time_csrf_and_never_returns_a_token(tmp_path: Path) ->
     assert client.post("/v1/pairing/start", headers=headers, json={}).status_code == 403
     status = client.get("/v1/pairing/status", headers={"Origin": ORIGIN})
     assert status.json() == {"configured": True, "linked": True}
+
+
+def test_voice_setup_uses_native_picker_and_never_exposes_private_fields(tmp_path: Path) -> None:
+    source = tmp_path / "voice.m4a"
+    source.write_bytes(b"voice")
+    registry = VoiceRegistry(
+        tmp_path / "private-voices",
+        FakePicker(source),
+        runner=FakeVoiceRunner(),
+    )
+    previews = FakePreviews()
+    library = LocalLibrary(tmp_path / "library", FakePicker(None))
+    client = TestClient(create_app(library=library, voices=registry, previews=previews))  # type: ignore[arg-type]
+
+    response = client.post(
+        "/v1/voice/choose",
+        headers={"Origin": ORIGIN, "X-Audiobook-CSRF": issue_token(client)},
+        json={"transcript": "录音对应的准确文字"},
+    )
+    assert response.status_code == 200
+    assert response.json()["confirmed"] is False
+    assert "transcript" not in response.text
+    assert "audio_path" not in response.text
+
+    preview = client.post(
+        "/v1/voice/preview",
+        headers={"Origin": ORIGIN, "X-Audiobook-CSRF": issue_token(client)},
+        json={},
+    )
+    assert preview.status_code == 202
+    assert previews.starts == 1

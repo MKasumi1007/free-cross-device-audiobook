@@ -53,3 +53,23 @@ def test_inactive_book_does_not_auto_replenish() -> None:
     assert should_auto_replenish(now - timedelta(hours=1), 3599, now)
     assert not should_auto_replenish(now - timedelta(hours=49), 0, now)
     assert not should_auto_replenish(now - timedelta(hours=1), 3600, now)
+
+
+def test_audio_chunk_never_crosses_a_chapter_boundary(tmp_path: Path) -> None:
+    path = tmp_path / "chapters.txt"
+    path.write_text(
+        "第一章 风来\n窗外有风，竹影轻轻摇动。\n\n第二章 月明\n庭前月色落在石阶上。",
+        encoding="utf-8",
+    )
+    book = parse_book(path, rights_confirmed=True)
+    batch = plan_generation_batch(book, target_seconds=600, chunk_seconds=600)
+    chapter_by_segment = {
+        segment.segment_id: segment.chapter_id
+        for chapter in book.chapters
+        for segment in chapter.segments
+    }
+    assert len(batch.chunks) == 2
+    assert all(
+        len({chapter_by_segment[segment_id] for segment_id in chunk.segment_ids}) == 1
+        for chunk in batch.chunks
+    )

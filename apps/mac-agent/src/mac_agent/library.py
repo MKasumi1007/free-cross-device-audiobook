@@ -33,6 +33,10 @@ class LocalLibrary:
         self._save(book)
         return book
 
+    def get(self, book_id: str) -> ParsedBook | None:
+        path = self.root / book_id / "book.json"
+        return self._load(path) if path.is_file() else None
+
     def _find_by_source_hash(self, source_sha256: str) -> Path | None:
         if not self.root.exists():
             return None
@@ -72,12 +76,16 @@ class LocalLibrary:
         )
 
     def _save(self, book: ParsedBook) -> None:
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.root.chmod(0o700)
         target_dir = self.root / book.book_id
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target_dir.chmod(0o700)
         target = target_dir / "book.json"
         temporary = target.with_suffix(".tmp")
         temporary.write_text(
             json.dumps(book.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        temporary.chmod(0o600)
         os.replace(temporary, target)

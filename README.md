@@ -2,7 +2,7 @@
 
 This repository implements the separately maintained v1.3 product specification.
 
-Current status: stage 2 login, cross-device metadata/progress sync, offline recovery, and Mac pairing are implemented and verified.
+Current status: stage 3 local voice setup, resumable Mac generation, guarded public Release publishing, background startup, and web controls are implemented and verified.
 
 ## Fixed Decisions
 
@@ -29,8 +29,13 @@ No real book, voice sample, generated audiobook, credential, or model cache belo
 - Responsive React PWA: desktop can add books; mobile shows `请在 Mac 上添加新书`.
 - Five-hour generation batches split near natural ten-minute boundaries.
 - Rights remain `LOCAL_ONLY` unless the user explicitly confirms public-distribution rights.
+- Private 10-30 second voice selection, normalization, versioning, preview, and explicit confirmation on the Mac.
+- Checkpointed segment generation with chapter-safe audio chunks, timelines, retry recovery, and stale-lock cleanup.
+- A single background generation worker with lease fencing, AC-power and memory guards, and idle TTS-model unloading.
+- Idempotent GitHub Release publication with stable asset names, byte/hash verification, and HTTP Range verification.
+- A private LaunchAgent runtime under macOS Application Support so normal use does not require Terminal.
 
-No TTS model is loaded while browsing, importing, logging in, or syncing. Long-form audio generation and publishing are the next implementation stage.
+No TTS model is loaded while browsing, importing, logging in, syncing, or waiting for work. The model starts only for an eligible generation task and unloads after idle time. The current downloaded EPUB remains local-only and cannot be queued for public Release publication without a separate rights confirmation.
 
 The active Firebase project remains on Spark (`$0`) with no Billing account. Only Authentication and Firestore are used; Storage, Functions, Firebase Hosting, Analytics, and Gemini are not enabled.
 
@@ -44,6 +49,7 @@ npm test
 npm run build
 npm run dev
 .venv/bin/audiobook-mac-agent
+.venv/bin/audiobook-install-agent
 ```
 
 The Qwen benchmark uses the preserved local prototype environment. Generated references, parsed real books and runtime output stay under ignored local directories.

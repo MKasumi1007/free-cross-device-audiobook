@@ -3,6 +3,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   runTransaction,
   serverTimestamp,
@@ -180,25 +181,104 @@ export async function saveBookmark(
   return bookmarkId;
 }
 
-export async function requestGeneration(ownerUid: string, book: ParsedBook): Promise<string> {
-  if (book.publication_mode !== "PUBLIC_RIGHTS_CONFIRMED") {
-    throw new Error("尚未确认这本书的传播权，不能创建公开音频生成任务。");
+export interface PlannedRequest {
+  taskId: string;
+  startSegmentId: string;
+  priority: number;
+  estimatedSeconds: number;
+}
+
+export function planGenerationRequests(book: ParsedBook, voiceVersion: string): PlannedRequest[] {
+  const requests: PlannedRequest[] = [];
+  for (const chapter of book.chapters) {
+    let chunkSeconds = 0;
+    let chunkStart = "";
+    for (const segment of chapter.segments) {
+      if (!segment.spoken_text) continue;
+      const seconds = segment.spoken_text.replace(/\s/g, "").length / 4.2;
+      if (!chunkStart) chunkStart = segment.segment_id;
+      if (chunkSeconds > 0 && chunkSeconds + seconds > 600) {
+        const taskId = `chunk-${book.book_id}-${voiceVersion}-${chunkStart}`;
+        requests.push({
+          taskId,
+          startSegmentId: chunkStart,
+          priority: requests.length ? 100 : 300,
+          estimatedSeconds: chunkSeconds,
+        });
+        chunkStart = segment.segment_id;
+        chunkSeconds = 0;
+      }
+      chunkSeconds += seconds;
+    }
+    if (chunkStart) {
+      const taskId = `chunk-${book.book_id}-${voiceVersion}-${chunkStart}`;
+      requests.push({
+        taskId,
+        startSegmentId: chunkStart,
+        priority: requests.length ? 100 : 300,
+        estimatedSeconds: chunkSeconds,
+      });
+    }
   }
+  return requests;
+}
+
+export function selectNextFiveHours(
+  requests: PlannedRequest[],
+  existingTaskIds: ReadonlySet<string>,
+): PlannedRequest[] {
+  const selected: PlannedRequest[] = [];
+  let selectedSeconds = 0;
+  for (const request of requests) {
+    if (existingTaskIds.has(request.taskId)) continue;
+    selected.push(request);
+    selectedSeconds += request.estimatedSeconds;
+    if (selectedSeconds >= 18_000) break;
+  }
+  return selected;
+}
+
+export async function requestFiveHourGeneration(
+  ownerUid: string,
+  book: ParsedBook,
+  voiceVersion: string,
+): Promise<number> {
+  if (book.publication_mode !== "PUBLIC_RIGHTS_CONFIRMED") {
+    throw new Error("尚未确认这本书的传播权，不能公开生成音频。");
+  }
+  if (!voiceVersion) throw new Error("请先设置并确认你的声音。");
   const { db } = requireServices();
-  const taskId = crypto.randomUUID();
-  await setDoc(doc(db, `users/${ownerUid}/generationRequests/${taskId}`), {
-    owner_uid: ownerUid,
-    task_id: taskId,
-    book_id: book.book_id,
-    status: "QUEUED",
-    priority: 300,
-    attempt_id: 0,
-    deletion_generation: 0,
-    target_seconds: 18_000,
-    chunk_seconds: 600,
-    created_at: serverTimestamp(),
-    updated_at: serverTimestamp(),
-  });
-  recordEstimatedUsage({ writes: 1 });
-  return taskId;
+  const requests = planGenerationRequests(book, voiceVersion);
+  const taskCollection = collection(db, `users/${ownerUid}/generationRequests`);
+  const existingSnapshot = await getDocs(taskCollection);
+  const existingTaskIds = new Set(existingSnapshot.docs.map((item) => item.id));
+  const missing = selectNextFiveHours(requests, existingTaskIds);
+  recordEstimatedUsage({ reads: existingSnapshot.size });
+  let created = 0;
+  for (const request of missing) {
+    const reference = doc(taskCollection, request.taskId);
+    const wasCreated = await runTransaction(db, async (transaction) => {
+      const current = await transaction.get(reference);
+      if (current.exists()) return false;
+      transaction.set(reference, {
+        owner_uid: ownerUid,
+        task_id: request.taskId,
+        book_id: book.book_id,
+        status: "QUEUED",
+        priority: request.priority,
+        attempt_id: 0,
+        deletion_generation: 0,
+        start_segment_id: request.startSegmentId,
+        target_seconds: 600,
+        chunk_seconds: 600,
+        voice_version: voiceVersion,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      });
+      return true;
+    });
+    if (wasCreated) created += 1;
+  }
+  recordEstimatedUsage({ reads: missing.length, writes: created });
+  return created;
 }

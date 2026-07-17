@@ -29,3 +29,24 @@ return POSIX path of chosenFile
             raise RuntimeError(result.stderr.strip() or "无法打开 Mac 文件选择器。")
         selected = result.stdout.strip()
         return Path(selected) if selected else None
+
+
+class NativeVoicePicker:
+    SCRIPT = """
+set chosenFile to choose file with prompt "选择 10 到 30 秒的清晰声音录音" of type {"public.audio"}
+return POSIX path of chosenFile
+"""
+
+    def choose(self) -> Path | None:
+        result = subprocess.run(
+            ["osascript", "-e", self.SCRIPT],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            if "User canceled" in result.stderr or "-128" in result.stderr:
+                return None
+            raise RuntimeError(result.stderr.strip() or "无法打开 Mac 文件选择器。")
+        selected = result.stdout.strip()
+        return Path(selected) if selected else None
