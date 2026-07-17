@@ -15,10 +15,18 @@ import {
 import { signInWithGoogle, signOutCurrentUser, watchAuth } from "./auth";
 import {
   loadCloudProgress,
+  loadRemoteBook,
+  prioritizeActiveBook,
+  requestAudioRepair,
   requestFiveHourGeneration,
+  saveBookmark,
   saveProgressOptimistically,
   syncBookMetadata,
+  watchAudioChunks,
+  watchBookmarks,
   watchCloudBooks,
+  type AudioChunk,
+  type CloudBookmark,
   type CloudBookSummary,
   type ProgressInput,
 } from "./cloud";
@@ -29,8 +37,10 @@ import {
   pairMacAgent,
   revokeMacAgent,
   watchMacAgents,
+  workerIsOnline,
   type WorkerLink,
 } from "./pairing";
+import { PlayerDock, type PlayerJumpRequest, type PlayerPosition } from "./PlayerDock";
 import { canAddBooks, currentPlatformSignals } from "./platform";
 import {
   bookMetadataNeedsSync,
@@ -46,6 +56,71 @@ import {
 } from "./storage";
 
 const DEMO_BOOK_ID = "356fc83a-1b37-5571-bb94-9d168a6a7c2f";
+const E2E_PLAYER_MODE = import.meta.env.DEV
+  && new URLSearchParams(window.location.search).get("e2e") === "player";
+
+function e2eBooks(items: ParsedBook[]): ParsedBook[] {
+  if (!E2E_PLAYER_MODE || !items[0]) return items;
+  const source = items[0];
+  const second: ParsedBook = {
+    ...source,
+    book_id: "e2e-second-book",
+    title: "山窗小札 · 第二册",
+    source_sha256: "e".repeat(64),
+    chapters: source.chapters.map((chapter) => ({
+      ...chapter,
+      chapter_id: `e2e-${chapter.chapter_id}`,
+      segments: chapter.segments.map((segment) => ({
+        ...segment,
+        segment_id: `e2e-${segment.segment_id}`,
+        chapter_id: `e2e-${chapter.chapter_id}`,
+      })),
+    })),
+  };
+  return [source, second];
+}
+
+function e2eAudioChunks(book: ParsedBook): AudioChunk[] {
+  if (!E2E_PLAYER_MODE) return [];
+  return book.chapters.slice(0, 2).map((chapter, index) => {
+    const segment = chapter.segments[0]!;
+    const chunkId = `e2e-${book.book_id}-${index}`;
+    const timeline = encodeURIComponent(JSON.stringify({
+      schema_version: 1,
+      book_id: book.book_id,
+      chunk_id: chunkId,
+      chapter_id: chapter.chapter_id,
+      duration_seconds: 2,
+      segments: [{
+        segment_id: segment.segment_id,
+        chapter_id: chapter.chapter_id,
+        segment_order: segment.order,
+        start_seconds: 0,
+        end_seconds: 2,
+      }],
+    }));
+    return {
+      owner_uid: "e2e-owner",
+      task_id: `e2e-task-${index}`,
+      book_id: book.book_id,
+      chunk_id: chunkId,
+      chapter_id: chapter.chapter_id,
+      status: "READY",
+      start_segment_id: segment.segment_id,
+      end_segment_id: segment.segment_id,
+      duration_seconds: 2,
+      asset_id: index + 1,
+      asset_url: `https://e2e.invalid/synthetic-tone.m4a?book=${book.book_id}&chunk=${index}`,
+      sha256: "",
+      byte_size: 20_000,
+      timeline_asset_id: index + 101,
+      timeline_url: `data:application/json,${timeline}`,
+      timeline_sha256: "",
+      voice_version: "e2e-synthetic",
+      deletion_generation: 0,
+    };
+  });
+}
 
 function chapterPreview(chapter: Chapter): string {
   return chapter.segments.find((segment) => segment.spoken_text)?.display_text.slice(0, 54) || "";
@@ -77,10 +152,17 @@ export function App() {
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
   const [pairingCode, setPairingCode] = useState("");
   const [workerLinks, setWorkerLinks] = useState<WorkerLink[]>([]);
+  const [audioChunks, setAudioChunks] = useState<AudioChunk[]>([]);
+  const [bookmarks, setBookmarks] = useState<CloudBookmark[]>([]);
+  const [resumeProgress, setResumeProgress] = useState<LocalProgress | null>(null);
+  const [jumpRequest, setJumpRequest] = useState<PlayerJumpRequest | null>(null);
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
   const progressQueues = useRef(new Map<string, Promise<void>>());
+  const currentProgress = useRef<LocalProgress | null>(null);
+  const cloudBooksRef = useRef<CloudBookSummary[]>([]);
+  const jumpSequence = useRef(0);
   const firebaseConfigured = firebaseIsConfigured();
 
   useEffect(() => watchAuth(setUser), []);
@@ -90,8 +172,9 @@ export function App() {
     loadBooks()
       .then((items) => {
         if (!active) return;
-        setBooks(items);
-        setSelectedBookId((current) => current || items[0]?.book_id || "");
+        const visibleBooks = e2eBooks(items);
+        setBooks(visibleBooks);
+        setSelectedBookId((current) => current || visibleBooks[0]?.book_id || "");
       })
       .catch(() => setNotice("本地书架暂时打不开，请刷新页面重试。"))
       .finally(() => active && setBusy(false));
@@ -167,9 +250,59 @@ export function App() {
   const selectedBook = books.find((book) => book.book_id === selectedBookId);
   const selectedChapter = selectedBook?.chapters.find((chapter) => chapter.chapter_id === selectedChapterId)
     ?? selectedBook?.chapters[0];
+  const activeMac = workerLinks.find((link) => !link.revoked_at);
+  const macOnline = E2E_PLAYER_MODE || workerIsOnline(activeMac);
 
   useEffect(() => {
-    if (!selectedBook) return;
+    cloudBooksRef.current = cloudBooks;
+  }, [cloudBooks]);
+
+  useEffect(() => {
+    if (E2E_PLAYER_MODE && selectedBook) {
+      setAudioChunks(e2eAudioChunks(selectedBook));
+      setBookmarks([]);
+      return;
+    }
+    if (!user || !selectedBook) {
+      setAudioChunks([]);
+      setBookmarks([]);
+      return;
+    }
+    const stopAudio = watchAudioChunks(
+      user.uid,
+      selectedBook.book_id,
+      setAudioChunks,
+      (error) => setNotice(error.message),
+    );
+    const stopBookmarks = watchBookmarks(
+      user.uid,
+      selectedBook.book_id,
+      setBookmarks,
+      (error) => setNotice(error.message),
+    );
+    return () => {
+      stopAudio();
+      stopBookmarks();
+    };
+  }, [selectedBook, user]);
+
+  useEffect(() => {
+    if (!user || !selectedBook || selectedBook.book_id === DEMO_BOOK_ID) return;
+    const refreshPriority = () => {
+      void prioritizeActiveBook(user.uid, selectedBook.book_id, cloudBooksRef.current)
+        .catch((error) => setNotice(classifyFirebaseError(error).message));
+    };
+    refreshPriority();
+    const timer = window.setInterval(refreshPriority, 6 * 60 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [selectedBook, user]);
+
+  useEffect(() => {
+    if (!selectedBook) {
+      currentProgress.current = null;
+      setResumeProgress(null);
+      return;
+    }
     let active = true;
     void (async () => {
       const local = await loadProgress(selectedBook.book_id);
@@ -197,11 +330,23 @@ export function App() {
       if (!active) return;
       setSelectedChapterId(chosen?.chapter_id || selectedBook.chapters[0]?.chapter_id || "");
       setSelectedSegmentId(chosen?.segment_id || "");
+      currentProgress.current = chosen || null;
+      setResumeProgress(chosen || null);
     })();
     return () => {
       active = false;
     };
   }, [selectedBook, user]);
+
+  useEffect(() => {
+    if (!selectedSegmentId) return;
+    const element = document.querySelector<HTMLElement>(`[data-segment-id="${selectedSegmentId}"]`);
+    if (!element) return;
+    const bounds = element.getBoundingClientRect();
+    if (bounds.top < 100 || bounds.bottom > window.innerHeight - 130) {
+      element.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [selectedChapterId, selectedSegmentId]);
 
   async function synchronizeProgress(ownerUid: string, progress: LocalProgress): Promise<void> {
     const input: ProgressInput = {
@@ -214,7 +359,7 @@ export function App() {
     const current = await loadProgress(progress.book_id);
     const result = await saveProgressOptimistically(ownerUid, input, current?.cloud_version || 0);
     if (result.status === "CONFLICT") {
-      await saveProgress({
+      const restored: LocalProgress = {
         book_id: result.progress.book_id,
         chapter_id: result.progress.chapter_id,
         segment_id: result.progress.segment_id,
@@ -223,8 +368,11 @@ export function App() {
         cloud_version: result.progress.version,
         pending_sync: false,
         updated_at: new Date().toISOString(),
-      });
+      };
+      await saveProgress(restored);
       if (selectedBookId === progress.book_id) {
+        currentProgress.current = restored;
+        setResumeProgress(restored);
         setSelectedChapterId(result.progress.chapter_id);
         setSelectedSegmentId(result.progress.segment_id);
       }
@@ -232,11 +380,15 @@ export function App() {
       return;
     }
     const latest = await loadProgress(progress.book_id);
-    await saveProgress({
+    const saved: LocalProgress = {
       ...(latest || progress),
       cloud_version: result.progress.version,
       pending_sync: latest?.segment_id !== progress.segment_id,
-    });
+    };
+    await saveProgress(saved);
+    if (selectedBookId === progress.book_id) {
+      currentProgress.current = saved;
+    }
   }
 
   function queueProgressSync(ownerUid: string, progress: LocalProgress) {
@@ -283,6 +435,25 @@ export function App() {
       setNotice(`《${book.title}》已加入书架。`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "添加书籍失败，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openRemoteBook(book: CloudBookSummary) {
+    if (book.publication_mode === "LOCAL_ONLY") {
+      setNotice("这本书的正文只在添加它的 Mac 上，请回到那台 Mac 阅读。");
+      return;
+    }
+    setBusy(true);
+    try {
+      const downloaded = await loadRemoteBook(book);
+      await saveBook(downloaded);
+      setBooks((current) => [downloaded, ...current.filter((item) => item.book_id !== downloaded.book_id)]);
+      setSelectedBookId(downloaded.book_id);
+      setNotice(`《${downloaded.title}》已安全载入，可以边听边看。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "手机正文暂时无法读取。");
     } finally {
       setBusy(false);
     }
@@ -410,33 +581,79 @@ export function App() {
     }
   }
 
+  async function persistPlayerPosition(position: PlayerPosition, syncCloud: boolean) {
+    if (!selectedBook) return;
+    const existing = currentProgress.current?.book_id === selectedBook.book_id
+      ? currentProgress.current
+      : await loadProgress(selectedBook.book_id);
+    const progress: LocalProgress = {
+      book_id: selectedBook.book_id,
+      chapter_id: position.chapterId,
+      segment_id: position.segmentId,
+      segment_order: position.segmentOrder,
+      audio_offset_seconds: position.audioOffsetSeconds,
+      cloud_version: existing?.cloud_version || 0,
+      pending_sync: Boolean(user && syncCloud),
+      updated_at: new Date().toISOString(),
+    };
+    currentProgress.current = progress;
+    await saveProgress(progress);
+    if (user && syncCloud) queueProgressSync(user.uid, progress);
+  }
+
+  function requestPlayerJump(segmentId: string, autoplay = false) {
+    jumpSequence.current += 1;
+    setJumpRequest({ key: jumpSequence.current, segmentId, autoplay });
+  }
+
+  async function addPlayerBookmark(position: PlayerPosition) {
+    if (!user || !selectedBook) {
+      setNotice("登录同步后才能在手机和 Mac 之间保存书签。");
+      return;
+    }
+    try {
+      await saveBookmark(
+        user.uid,
+        selectedBook.book_id,
+        position.chapterId,
+        position.segmentId,
+      );
+      setNotice("书签已保存，可以在其他设备打开。");
+    } catch (error) {
+      setNotice(classifyFirebaseError(error).message);
+    }
+  }
+
+  async function repairAudio(chunk: AudioChunk) {
+    if (!user) return;
+    try {
+      await requestAudioRepair(user.uid, chunk);
+      setNotice(macOnline ? "已安排重新检查这段音频。" : "修复请求已保存，Mac 开机后会自动处理。");
+    } catch (error) {
+      setNotice(classifyFirebaseError(error).message);
+    }
+  }
+
   function openChapter(chapter: Chapter) {
     setSelectedChapterId(chapter.chapter_id);
-    setSelectedSegmentId(chapter.segments[0]?.segment_id || "");
+    const segmentId = chapter.segments[0]?.segment_id || "";
+    setSelectedSegmentId(segmentId);
+    if (segmentId) requestPlayerJump(segmentId);
   }
 
   function markPosition(segment: TextSegment) {
     if (!selectedBook || !selectedChapter) return;
     setSelectedSegmentId(segment.segment_id);
-    void (async () => {
-      const existing = await loadProgress(selectedBook.book_id);
-      const progress: LocalProgress = {
-        book_id: selectedBook.book_id,
-        chapter_id: selectedChapter.chapter_id,
-        segment_id: segment.segment_id,
-        segment_order: segment.order,
-        audio_offset_seconds: 0,
-        cloud_version: existing?.cloud_version || 0,
-        pending_sync: Boolean(user),
-        updated_at: new Date().toISOString(),
-      };
-      await saveProgress(progress);
-      if (user) queueProgressSync(user.uid, progress);
-    })();
+    requestPlayerJump(segment.segment_id);
+    void persistPlayerPosition({
+      chapterId: selectedChapter.chapter_id,
+      segmentId: segment.segment_id,
+      segmentOrder: segment.order,
+      audioOffsetSeconds: 0,
+    }, true);
   }
 
   const cloudOnlyBooks = cloudBooks.filter((cloudBook) => !books.some((book) => book.book_id === cloudBook.book_id));
-  const activeMac = workerLinks.find((link) => !link.revoked_at);
 
   return (
     <div className="app-shell">
@@ -488,7 +705,7 @@ export function App() {
               <button
                 className={`book-card book-card--cloud book-card--tone-${(books.length + index) % 4}`}
                 key={book.book_id}
-                onClick={() => setNotice(book.publication_mode === "LOCAL_ONLY" ? "这本书的正文只在添加它的 Mac 上，请回到那台 Mac 阅读。" : "这本书已在云端书架中，正文会在发布完成后出现。")}
+                onClick={() => void openRemoteBook(book)}
               >
                 <span className="book-spine" />
                 <span className="book-format">{book.source_format}</span>
@@ -519,6 +736,20 @@ export function App() {
                 生成约 5 小时音频
               </button>
             )}
+            {bookmarks.length > 0 && (
+              <div className="bookmark-list" aria-label="书签">
+                <b>书签 {bookmarks.length}</b>
+                {bookmarks.slice(0, 6).map((bookmark, index) => (
+                  <button
+                    key={bookmark.bookmark_id}
+                    onClick={() => requestPlayerJump(bookmark.segment_id)}
+                  >
+                    <span>{index + 1}</span>
+                    {selectedBook.chapters.find((chapter) => chapter.chapter_id === bookmark.chapter_id)?.title || "已保存位置"}
+                  </button>
+                ))}
+              </div>
+            )}
             <nav className="toc-list" aria-label="目录">
               {selectedBook.chapters.map((chapter) => (
                 <button
@@ -544,6 +775,7 @@ export function App() {
               {selectedChapter?.segments.map((segment) => (
                 <button
                   key={segment.segment_id}
+                  data-segment-id={segment.segment_id}
                   className={segmentClass(segment, selectedSegmentId === segment.segment_id)}
                   onClick={() => markPosition(segment)}
                 >
@@ -556,17 +788,22 @@ export function App() {
       )}
 
       {selectedBook && (
-        <footer className="player-dock">
-          <button disabled aria-label="上一段">‹</button>
-          <button className="play-button" disabled aria-label="播放">▶</button>
-          <button disabled aria-label="下一段">›</button>
-          <div className="player-status">
-            <b>正文已准备</b>
-            <span>音频将在 Mac 语音生成阶段接入</span>
-          </div>
-          <div className="player-progress"><i /></div>
-          <span className="player-time">00:00 / --:--</span>
-        </footer>
+        <PlayerDock
+          book={selectedBook}
+          chunks={audioChunks}
+          resumeSegmentId={resumeProgress?.segment_id || ""}
+          resumeOffsetSeconds={resumeProgress?.audio_offset_seconds || 0}
+          jumpRequest={jumpRequest}
+          macOnline={macOnline}
+          onHighlight={(chapterId, segmentId) => {
+            if (chapterId) setSelectedChapterId(chapterId);
+            setSelectedSegmentId(segmentId);
+          }}
+          onPosition={(position, syncCloud) => void persistPlayerPosition(position, syncCloud)}
+          onBookmark={(position) => void addPlayerBookmark(position)}
+          onRepair={(chunk) => void repairAudio(chunk)}
+          onNotice={setNotice}
+        />
       )}
 
       {showImport && (

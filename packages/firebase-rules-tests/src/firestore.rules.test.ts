@@ -148,7 +148,75 @@ describe("optimistic progress", () => {
   });
 });
 
+describe("multi-book scheduling", () => {
+  it("lets the owner pause an inactive retry and restore it to the active queue", async () => {
+    const path = "users/owner-a/generationRequests/task-a";
+    await seed(path, {
+      ...taskData("owner-a"),
+      status: "FAILED_RETRYABLE",
+      priority: 300,
+      error_code: "TEMPORARY_FAILURE",
+    });
+    const task = doc(ownerDb(), path);
+
+    await assertSucceeds(updateDoc(task, {
+      status: "PAUSED",
+      pause_reason: "INACTIVE_48_HOURS",
+      priority: 100,
+      updated_at: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(task, {
+      status: "QUEUED",
+      pause_reason: null,
+      priority: 300,
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(task, {
+      attempt_id: 99,
+      updated_at: serverTimestamp(),
+    }));
+  });
+});
+
 describe("worker permissions", () => {
+  it("publishes text metadata only for a rights-confirmed book", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    const publicPath = "users/owner-a/books/public-book";
+    await seed(publicPath, {
+      ...bookData("owner-a", "public-book"),
+      publication_mode: "PUBLIC_RIGHTS_CONFIRMED",
+    });
+    await assertSucceeds(updateDoc(doc(workerDb(), publicPath), {
+      text_status: "READY",
+      text_asset_id: 12,
+      text_asset_name: "book-public-text.json.gz",
+      text_asset_url: "https://example.test/book.json.gz",
+      text_sha256: "b".repeat(64),
+      text_byte_size: 500,
+      text_schema_version: 1,
+      updated_at: serverTimestamp(),
+    }));
+
+    const privatePath = "users/owner-a/books/private-book";
+    await seed(privatePath, bookData("owner-a", "private-book"));
+    await assertFails(updateDoc(doc(workerDb(), privatePath), {
+      text_status: "READY",
+      text_asset_id: 13,
+      text_asset_name: "forbidden.json.gz",
+      text_asset_url: "https://example.test/forbidden.json.gz",
+      text_sha256: "c".repeat(64),
+      text_byte_size: 500,
+      text_schema_version: 1,
+      updated_at: serverTimestamp(),
+    }));
+  });
+
   it("allows task lease fields but blocks progress and unrelated task fields", async () => {
     await seed("workerLinks/worker-a", {
       worker_uid: "worker-a",
@@ -330,6 +398,70 @@ describe("worker permissions", () => {
     };
     await assertFails(setDoc(reference, { ...valid, lease_token: "old-secure-lease-token" }));
     await assertSucceeds(setDoc(reference, valid));
+  });
+
+  it("uses a deletion generation barrier when repairing unavailable audio", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    await seed("users/owner-a/generationRequests/task-a", {
+      ...taskData("owner-a"),
+      status: "UPLOADING",
+      attempt_id: 2,
+      lease_owner: "worker-a",
+      lease_token: "current-secure-lease-token",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      deletion_generation: 4,
+    });
+    const path = "users/owner-a/books/book-a/audioChunks/chunk-a";
+    await seed(path, {
+      owner_uid: "owner-a",
+      task_id: "task-a",
+      book_id: "book-a",
+      chunk_id: "chunk-a",
+      chapter_id: "chapter-a",
+      status: "READY",
+      attempt_id: 1,
+      lease_token: "old-secure-lease-token",
+      deletion_generation: 3,
+      asset_id: 10,
+      updated_at: Timestamp.now(),
+    });
+    const ownerReference = doc(ownerDb(), path);
+    await assertSucceeds(updateDoc(ownerReference, {
+      status: "FAILED_RETRYABLE",
+      error_code: "PLAYBACK_UNAVAILABLE",
+      deletion_generation: 4,
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(doc(ownerDb("owner-b"), path), {
+      status: "FAILED_RETRYABLE",
+      error_code: "PLAYBACK_UNAVAILABLE",
+      deletion_generation: 5,
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(doc(workerDb(), path), {
+      status: "READY",
+      attempt_id: 2,
+      lease_token: "current-secure-lease-token",
+      deletion_generation: 3,
+      asset_id: 20,
+      updated_at: serverTimestamp(),
+      completed_at: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(doc(workerDb(), path), {
+      status: "READY",
+      attempt_id: 2,
+      lease_token: "current-secure-lease-token",
+      deletion_generation: 4,
+      asset_id: 20,
+      updated_at: serverTimestamp(),
+      completed_at: serverTimestamp(),
+    }));
   });
 });
 

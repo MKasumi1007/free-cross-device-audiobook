@@ -24,6 +24,12 @@ export interface WorkerLink {
   last_seen_at: unknown;
 }
 
+export function workerIsOnline(link: WorkerLink | undefined, now = Date.now()): boolean {
+  if (!link || link.revoked_at || !link.last_seen_at || typeof link.last_seen_at !== "object") return false;
+  const toMillis = (link.last_seen_at as { toMillis?: unknown }).toMillis;
+  return typeof toMillis === "function" && Number(toMillis.call(link.last_seen_at)) >= now - 10 * 60_000;
+}
+
 export class PairingError extends Error {
   constructor(public readonly code: "BAD_CODE" | "EXPIRED" | "RATE_LIMITED") {
     super(code === "RATE_LIMITED" ? "尝试次数过多，请十分钟后重新配对。" : "配对码无效或已过期。")

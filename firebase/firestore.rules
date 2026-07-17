@@ -73,13 +73,6 @@ service cloud.firestore {
         && hasRecentPairingAttempt(request.resource.data.pairing_hash);
     }
 
-    function validTaskStatus(status) {
-      return status in [
-        'QUEUED', 'LEASED', 'GENERATING', 'ENCODING', 'UPLOADING', 'READY',
-        'PAUSED', 'FAILED_RETRYABLE', 'FAILED_FINAL', 'DELETING', 'DELETED', 'CANCELLED'
-      ];
-    }
-
     function validWorkerTransition() {
       return (resource.data.status == 'QUEUED' && request.resource.data.status == 'LEASED')
         || (resource.data.status == 'FAILED_RETRYABLE' && request.resource.data.status == 'LEASED')
@@ -152,10 +145,26 @@ service cloud.firestore {
         allow create: if isOwner(ownerUid)
           && requestKeepsOwner(ownerUid)
           && request.resource.data.book_id == bookId;
-        allow update: if isOwner(ownerUid)
+        allow update: if (
+          isOwner(ownerUid)
           && requestKeepsOwner(ownerUid)
           && request.resource.data.book_id == bookId
-          && request.resource.data.source_sha256 == resource.data.source_sha256;
+          && request.resource.data.source_sha256 == resource.data.source_sha256
+        ) || (
+          activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && resource.data.publication_mode == 'PUBLIC_RIGHTS_CONFIRMED'
+          && request.resource.data.book_id == resource.data.book_id
+          && request.resource.data.source_sha256 == resource.data.source_sha256
+          && request.resource.data.text_status == 'READY'
+          && request.resource.data.text_asset_id is int
+          && request.resource.data.text_asset_url is string
+          && request.resource.data.text_sha256 is string
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'text_status', 'text_asset_id', 'text_asset_name', 'text_asset_url',
+            'text_sha256', 'text_byte_size', 'text_schema_version', 'updated_at'
+          ])
+        );
         allow delete: if isOwner(ownerUid);
 
         match /chapters/{chapterId} {
@@ -185,16 +194,35 @@ service cloud.firestore {
             && request.resource.data.status == 'READY'
             && request.resource.data.task_id is string
             && activeTaskLease(ownerUid, request.resource.data.task_id);
-          allow update: if activeWorkerFor(ownerUid)
+          allow update: if (
+            isOwner(ownerUid)
             && requestKeepsOwner(ownerUid)
+            && resource.data.status == 'READY'
+            && request.resource.data.status == 'FAILED_RETRYABLE'
+            && request.resource.data.error_code == 'PLAYBACK_UNAVAILABLE'
+            && request.resource.data.deletion_generation == resource.data.deletion_generation + 1
+            && request.resource.data.updated_at == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'error_code', 'deletion_generation', 'updated_at'
+            ])
+          ) || (
+            activeWorkerFor(ownerUid)
+            && requestKeepsOwner(ownerUid)
+            && request.resource.data.task_id == resource.data.task_id
             && request.resource.data.book_id == resource.data.book_id
             && request.resource.data.chunk_id == resource.data.chunk_id
+            && resource.data.status == 'FAILED_RETRYABLE'
+            && request.resource.data.status == 'READY'
+            && request.resource.data.deletion_generation == resource.data.deletion_generation
+            && activeTaskLease(ownerUid, request.resource.data.task_id)
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'status', 'attempt_id', 'lease_token', 'duration_seconds', 'asset_id',
-              'asset_url', 'sha256', 'byte_size', 'codec', 'timeline_asset_id',
-              'error_code', 'updated_at', 'completed_at', 'deleted_at'
+              'status', 'attempt_id', 'lease_token', 'start_segment_id', 'end_segment_id',
+              'chapter_id', 'duration_seconds', 'asset_id', 'asset_url', 'sha256',
+              'byte_size', 'codec', 'timeline_asset_id', 'timeline_url',
+              'timeline_sha256', 'voice_version', 'error_code', 'updated_at',
+              'completed_at'
             ])
-            && validTaskStatus(request.resource.data.status);
+          );
           allow delete: if false;
         }
       }

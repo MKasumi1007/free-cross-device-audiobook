@@ -8,7 +8,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_FIREBASE_CONFIG = ROOT / "config/firebase-public-config.json"
-SKIP_DIRS = {".git", ".local", ".venv", "dist", "node_modules", "private", "runtime-data"}
+SKIP_DIRS = {
+    ".git",
+    ".local",
+    ".venv",
+    "dist",
+    "node_modules",
+    "playwright-report",
+    "private",
+    "runtime-data",
+    "test-results",
+}
 SKIP_SUFFIXES = {
     ".aiff",
     ".epub",
@@ -38,18 +48,24 @@ PATTERNS = {
 def candidates() -> list[Path]:
     result: list[Path] = []
     for path in ROOT.rglob("*"):
-        if not path.is_file() or any(part in SKIP_DIRS for part in path.parts):
+        try:
+            if not path.is_file() or any(part in SKIP_DIRS for part in path.parts):
+                continue
+            if path.suffix.lower() in SKIP_SUFFIXES or path.stat().st_size > 2_000_000:
+                continue
+            result.append(path)
+        except FileNotFoundError:
             continue
-        if path.suffix.lower() in SKIP_SUFFIXES or path.stat().st_size > 2_000_000:
-            continue
-        result.append(path)
     return result
 
 
 def main() -> int:
     findings: list[str] = []
     for path in candidates():
-        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            continue
         for label, pattern in PATTERNS.items():
             if label == "Google API key" and path == PUBLIC_FIREBASE_CONFIG:
                 # Firebase Web API keys identify a project but do not authorize access;

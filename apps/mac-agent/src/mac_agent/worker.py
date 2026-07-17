@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -8,9 +9,10 @@ from typing import Callable
 from audiobook_core.models import ParsedBook
 from audiobook_core.planning import plan_generation_batch
 
+from .book_assets import BookTextPublisher
 from .generation import ChunkJob, ChunkPipeline, GenerationError, SegmentGenerator, SegmentJob
 from .library import LocalLibrary
-from .release_assets import GitHubReleasePublisher
+from .repository_assets import GitHubAudiobookPublisher, GitHubRepositoryAssetPublisher
 from .resources import ResourcePolicy
 from .task_cloud import CloudTask, FirestoreWorkerTasks
 from .voice import VoiceProfile, VoiceRegistry
@@ -91,8 +93,10 @@ class MacGenerationWorker:
         self._thread: threading.Thread | None = None
         self._generator: SegmentGenerator | None = None
         self._voice_version = ""
+        self._published_books: set[str] = set()
         self.last_state = "IDLE"
         self.last_error = ""
+        self._last_presence = 0.0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -124,6 +128,9 @@ class MacGenerationWorker:
         if owner_uid is None:
             self.last_state = "WAITING_FOR_PAIRING"
             return False
+        if time.monotonic() - self._last_presence >= 4 * 60:
+            self.tasks.touch_presence()
+            self._last_presence = time.monotonic()
         profile = self.voices.load()
         if profile is None or not profile.confirmed:
             self.last_state = "WAITING_FOR_VOICE"
@@ -159,12 +166,13 @@ class MacGenerationWorker:
         fence = RenewingFence(self.tasks, task)
         fence.start()
         try:
+            self._ensure_book_text(task.owner_uid, book)
             job = self._make_job(book, task, profile)
             generator = self._generator_for(profile)
             pipeline = ChunkPipeline(
                 self.work_root,
                 generator,
-                GitHubReleasePublisher(self.repository),
+                GitHubAudiobookPublisher(self.repository),
                 fence,
                 observer=fence,
             )
@@ -205,6 +213,16 @@ class MacGenerationWorker:
             self._generator = self.generator_factory(profile)
             self._voice_version = profile.voice_version
         return self._generator
+
+    def _ensure_book_text(self, owner_uid: str, book: ParsedBook) -> None:
+        if book.book_id in self._published_books:
+            return
+        existing = self.tasks.book_text_asset(owner_uid, book.book_id)
+        if existing is None:
+            publisher = GitHubRepositoryAssetPublisher(self.repository)
+            asset = BookTextPublisher(self.work_root / "books", publisher).publish(book)
+            self.tasks.record_book_text(owner_uid, book, asset)
+        self._published_books.add(book.book_id)
 
     @staticmethod
     def _make_job(book: ParsedBook, task: CloudTask, profile: VoiceProfile) -> ChunkJob:

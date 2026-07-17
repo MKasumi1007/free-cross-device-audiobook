@@ -1,7 +1,7 @@
 import type { ParsedBook } from "@audiobook/contracts";
 import { describe, expect, it } from "vitest";
 
-import { planGenerationRequests, selectNextFiveHours } from "./cloud";
+import { generationTaskUpdate, planGenerationRequests, selectNextFiveHours } from "./cloud";
 
 function longBook(): ParsedBook {
   return {
@@ -40,5 +40,34 @@ describe("five-hour generation queue", () => {
     const second = selectNextFiveHours(requests, new Set(first.map((item) => item.taskId)));
     expect(second).toHaveLength(5);
     expect(second[0]?.startSegmentId).toBe("segment-030");
+  });
+
+  it("prioritizes the open book and pauses only books inactive for 48 hours", () => {
+    const inactive = new Set(["book-old"]);
+    expect(generationTaskUpdate(
+      { book_id: "book-active", status: "QUEUED", priority: 100 },
+      "book-active",
+      inactive,
+    )).toEqual({ priority: 300 });
+    expect(generationTaskUpdate(
+      { book_id: "book-old", status: "QUEUED", priority: 100 },
+      "book-active",
+      inactive,
+    )).toEqual({ status: "PAUSED", pause_reason: "INACTIVE_48_HOURS", priority: 100 });
+    expect(generationTaskUpdate(
+      { book_id: "book-active", status: "PAUSED", pause_reason: "INACTIVE_48_HOURS" },
+      "book-active",
+      inactive,
+    )).toEqual({ status: "QUEUED", pause_reason: null, priority: 300 });
+    expect(generationTaskUpdate(
+      { book_id: "book-active", status: "FAILED_RETRYABLE", priority: 100 },
+      "book-active",
+      inactive,
+    )).toEqual({ status: "QUEUED", pause_reason: null, priority: 300 });
+    expect(generationTaskUpdate(
+      { book_id: "book-old", status: "FAILED_RETRYABLE", priority: 300 },
+      "book-active",
+      inactive,
+    )).toEqual({ status: "PAUSED", pause_reason: "INACTIVE_48_HOURS", priority: 100 });
   });
 });

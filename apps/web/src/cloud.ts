@@ -1,4 +1,4 @@
-import type { ParsedBook } from "@audiobook/contracts";
+import { parsedBookSchema, type ParsedBook } from "@audiobook/contracts";
 import {
   collection,
   doc,
@@ -17,6 +17,7 @@ import { getDeviceId } from "./device";
 import { getFirebaseServices } from "./firebase";
 import { classifyFirebaseError, type SyncError } from "./firebase-errors";
 import { recordEstimatedUsage } from "./usage";
+import { fetchVerifiedGzipJson } from "./remote-asset";
 
 export interface CloudBookSummary {
   book_id: string;
@@ -27,7 +28,46 @@ export interface CloudBookSummary {
   publication_mode: "LOCAL_ONLY" | "PUBLIC_RIGHTS_CONFIRMED";
   chapter_count: number;
   segment_count: number;
+  last_listened_at?: unknown;
+  text_status?: "READY";
+  text_asset_id?: number;
+  text_asset_name?: string;
+  text_asset_url?: string;
+  text_sha256?: string;
+  text_byte_size?: number;
   updated_at?: unknown;
+}
+
+export interface AudioChunk {
+  owner_uid: string;
+  task_id: string;
+  book_id: string;
+  chunk_id: string;
+  chapter_id: string;
+  status: "READY" | "FAILED_RETRYABLE" | "DELETING" | "DELETED";
+  start_segment_id: string;
+  end_segment_id: string;
+  duration_seconds: number;
+  asset_id: number;
+  asset_url: string;
+  sha256: string;
+  byte_size: number;
+  timeline_asset_id: number;
+  timeline_url: string;
+  timeline_sha256: string;
+  voice_version: string;
+  deletion_generation: number;
+  completed_at?: unknown;
+}
+
+export interface CloudBookmark {
+  owner_uid: string;
+  bookmark_id: string;
+  book_id: string;
+  chapter_id: string;
+  segment_id: string;
+  note: string;
+  created_at: unknown;
 }
 
 export interface ProgressInput {
@@ -119,6 +159,45 @@ export function watchCloudBooks(
   }, (error) => onError(classifyFirebaseError(error)));
 }
 
+export async function loadRemoteBook(book: CloudBookSummary): Promise<ParsedBook> {
+  if (
+    book.publication_mode !== "PUBLIC_RIGHTS_CONFIRMED"
+    || book.text_status !== "READY"
+    || !book.text_asset_url
+    || !book.text_sha256
+  ) {
+    throw new Error("这本书的手机正文还没有准备完成。");
+  }
+  const payload = await fetchVerifiedGzipJson(book.text_asset_url, book.text_sha256);
+  return parsedBookSchema.parse(payload);
+}
+
+export function watchAudioChunks(
+  ownerUid: string,
+  bookId: string,
+  onChunks: (chunks: AudioChunk[]) => void,
+  onError: (error: SyncError) => void,
+): Unsubscribe {
+  const { db } = requireServices();
+  return onSnapshot(collection(db, `users/${ownerUid}/books/${bookId}/audioChunks`), (snapshot) => {
+    recordEstimatedUsage({ reads: snapshot.size });
+    onChunks(snapshot.docs.map((item) => item.data() as AudioChunk));
+  }, (error) => onError(classifyFirebaseError(error)));
+}
+
+export function watchBookmarks(
+  ownerUid: string,
+  bookId: string,
+  onBookmarks: (bookmarks: CloudBookmark[]) => void,
+  onError: (error: SyncError) => void,
+): Unsubscribe {
+  const { db } = requireServices();
+  return onSnapshot(collection(db, `users/${ownerUid}/books/${bookId}/bookmarks`), (snapshot) => {
+    recordEstimatedUsage({ reads: snapshot.size });
+    onBookmarks(snapshot.docs.map((item) => item.data() as CloudBookmark));
+  }, (error) => onError(classifyFirebaseError(error)));
+}
+
 function progressFromData(value: DocumentData): CloudProgress {
   return value as CloudProgress;
 }
@@ -179,6 +258,119 @@ export async function saveBookmark(
   });
   recordEstimatedUsage({ writes: 1 });
   return bookmarkId;
+}
+
+function timestampMillis(value: unknown): number | null {
+  if (!value || typeof value !== "object" || !("toMillis" in value)) return null;
+  const toMillis = (value as { toMillis?: unknown }).toMillis;
+  return typeof toMillis === "function" ? Number(toMillis.call(value)) : null;
+}
+
+export interface GenerationTaskSummary {
+  book_id?: string;
+  status?: string;
+  priority?: number;
+  pause_reason?: string | null;
+}
+
+export function generationTaskUpdate(
+  task: GenerationTaskSummary,
+  activeBookId: string,
+  inactiveBookIds: ReadonlySet<string>,
+): Record<string, unknown> | null {
+  if (task.book_id === activeBookId) {
+    if (task.status === "PAUSED" && task.pause_reason === "INACTIVE_48_HOURS") {
+      return { status: "QUEUED", pause_reason: null, priority: 300 };
+    }
+    if (task.status === "FAILED_RETRYABLE") {
+      return { status: "QUEUED", pause_reason: null, priority: 300 };
+    }
+    if (task.status === "QUEUED" && task.priority !== 300) return { priority: 300 };
+    return null;
+  }
+  if (
+    task.book_id
+    && inactiveBookIds.has(task.book_id)
+    && (task.status === "QUEUED" || task.status === "FAILED_RETRYABLE")
+  ) {
+    return { status: "PAUSED", pause_reason: "INACTIVE_48_HOURS", priority: 100 };
+  }
+  if (task.status === "QUEUED" && task.priority !== 100) return { priority: 100 };
+  return null;
+}
+
+export async function prioritizeActiveBook(
+  ownerUid: string,
+  activeBookId: string,
+  books: CloudBookSummary[],
+): Promise<void> {
+  const { db } = requireServices();
+  await setDoc(doc(db, `users/${ownerUid}/books/${activeBookId}`), {
+    last_listened_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+  }, { merge: true });
+  const inactiveBookIds = new Set(
+    books
+      .filter((book) => {
+        const lastListened = timestampMillis(book.last_listened_at);
+        return book.book_id !== activeBookId
+          && lastListened !== null
+          && lastListened < Date.now() - 48 * 60 * 60 * 1000;
+      })
+      .map((book) => book.book_id),
+  );
+  const snapshot = await getDocs(collection(db, `users/${ownerUid}/generationRequests`));
+  const updates: Array<{ reference: ReturnType<typeof doc>; value: Record<string, unknown> }> = [];
+  for (const item of snapshot.docs) {
+    const value = generationTaskUpdate(
+      item.data() as GenerationTaskSummary,
+      activeBookId,
+      inactiveBookIds,
+    );
+    if (value) updates.push({ reference: item.ref, value: { ...value, updated_at: serverTimestamp() } });
+  }
+  for (let offset = 0; offset < updates.length; offset += 400) {
+    const batch = writeBatch(db);
+    for (const update of updates.slice(offset, offset + 400)) {
+      batch.update(update.reference, update.value);
+    }
+    await batch.commit();
+  }
+  recordEstimatedUsage({ reads: snapshot.size, writes: updates.length + 1 });
+}
+
+export async function requestAudioRepair(ownerUid: string, chunk: AudioChunk): Promise<void> {
+  const { db } = requireServices();
+  const chunkReference = doc(
+    db,
+    `users/${ownerUid}/books/${chunk.book_id}/audioChunks/${chunk.chunk_id}`,
+  );
+  const taskReference = doc(db, `users/${ownerUid}/generationRequests/${chunk.task_id}`);
+  await runTransaction(db, async (transaction) => {
+    const [chunkSnapshot, taskSnapshot] = await Promise.all([
+      transaction.get(chunkReference),
+      transaction.get(taskReference),
+    ]);
+    if (!chunkSnapshot.exists() || !taskSnapshot.exists()) {
+      throw new Error("这段音频记录不完整，请稍后再试。");
+    }
+    const currentChunk = chunkSnapshot.data() as AudioChunk;
+    const deletionGeneration = Number(currentChunk.deletion_generation || 0) + 1;
+    transaction.update(chunkReference, {
+      status: "FAILED_RETRYABLE",
+      error_code: "PLAYBACK_UNAVAILABLE",
+      deletion_generation: deletionGeneration,
+      updated_at: serverTimestamp(),
+    });
+    transaction.update(taskReference, {
+      status: "QUEUED",
+      pause_reason: null,
+      priority: 300,
+      deletion_generation: deletionGeneration,
+      updated_at: serverTimestamp(),
+    });
+  });
+  recordEstimatedUsage({ reads: 2, writes: 2 });
 }
 
 export interface PlannedRequest {

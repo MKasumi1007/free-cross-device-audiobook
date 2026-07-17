@@ -14,6 +14,8 @@ coverage/
 build/
 dist/
 node_modules/
+playwright-report/
+test-results/
 *.log
 *.pyc
 
@@ -37,3 +39,7 @@ firebase-debug.log
 models/
 private/
 runtime-data/
+
+# Project-created two-second tone used only by Playwright; it is never shipped in the PWA.
+!apps/web/e2e/fixtures/
+!apps/web/e2e/fixtures/synthetic-tone.m4a

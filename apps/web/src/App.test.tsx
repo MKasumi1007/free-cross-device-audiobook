@@ -30,6 +30,7 @@ vi.mock("./auth", () => ({
 vi.mock("./pairing", () => ({
   pairMacAgent: vi.fn(async () => "worker-a"),
   revokeMacAgent: pairingMocks.revoke,
+  workerIsOnline: vi.fn(() => false),
   watchMacAgents: vi.fn((_ownerUid: string, listener: (links: unknown[]) => void) => {
     listener(testState.workerLinks);
     return () => undefined;
@@ -51,9 +52,15 @@ vi.mock("./agent", () => ({
 
 vi.mock("./cloud", () => ({
   loadCloudProgress: vi.fn(async () => null),
+  loadRemoteBook: vi.fn(async () => demoBook),
+  prioritizeActiveBook: vi.fn(async () => undefined),
+  requestAudioRepair: vi.fn(async () => undefined),
   requestFiveHourGeneration: vi.fn(async () => 2),
+  saveBookmark: vi.fn(async () => "bookmark-a"),
   saveProgressOptimistically: vi.fn(),
   syncBookMetadata: vi.fn(async () => undefined),
+  watchAudioChunks: vi.fn(() => () => undefined),
+  watchBookmarks: vi.fn(() => () => undefined),
   watchCloudBooks: vi.fn(() => () => undefined),
 }));
 

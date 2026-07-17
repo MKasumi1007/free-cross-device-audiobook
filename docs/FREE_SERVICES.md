@@ -9,7 +9,8 @@ This document records official terms relevant to the hard requirement: no paymen
 | Service | Current decision | Payment safety | Product role |
 | --- | --- | --- | --- |
 | GitHub Pages | Allowed | Public repository feature; no paid upgrade planned | Static PWA only |
-| GitHub Releases | Allowed with public-data warning | Public release assets; no payment method needed for the planned public repository | Rights-confirmed books and audio |
+| GitHub Releases | Allowed with public-data warning | Public release assets; no payment method needed for the planned public repository | Generated audio for rights-confirmed books |
+| GitHub public data branch | Allowed with public-data warning | Normal public repository storage; no paid add-on enabled | Rights-confirmed parsed text and timelines |
 | Standard GitHub-hosted Actions runner | CI/test/deploy only | Free for public repositories; larger runners are charged | CI, Pages, small TTS experiment |
 | Firebase Spark | Allowed after console verification | Official docs say no payment information is needed; quota exhaustion shuts off the product | Auth and Firestore metadata |
 | Firebase Blaze / Cloud Billing | Forbidden | Pay as you go and requires billing linkage | None |
@@ -79,9 +80,9 @@ Design safeguards:
 
 Source: <https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases>
 
-## GitHub Pages
+## GitHub Pages and Public Data Branch
 
-Current documented limits include a 1 GiB published-site maximum, a 10-minute deployment timeout and a soft 100 GiB monthly bandwidth limit. Pages hosts only the static app shell; books and audio stay in Releases.
+Current documented limits include a 1 GiB published-site maximum, a 10-minute deployment timeout and a soft 100 GiB monthly bandwidth limit. Pages hosts only the static app shell. Rights-confirmed text and timeline JSON use an isolated public `book-assets` branch so browsers can read them with CORS; M4A audio remains in Releases. `LOCAL_ONLY` books and voice data never enter either location.
 
 Source: <https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits>
 
@@ -94,4 +95,5 @@ Source: <https://docs.github.com/en/pages/getting-started-with-github-pages/gith
 - Authorized domains currently include localhost development and the planned `mkasumi1007.github.io` Pages domain.
 - A project-created synthetic Qwen smoke asset was published to a public GitHub Release, downloaded in full, hash/size checked, and fetched with a real HTTP `206` Range response.
 - The production Mac worker uses local CPU/RAM only; its power and memory guard pauses work rather than requesting paid compute.
-- The Firebase project still uses only Spark Authentication and Firestore. No Storage, Functions, Hosting, Billing, Blaze, or payment method was added for stage 3.
+- A real Chrome run fetched and decompressed project-created text and timeline fixtures from `book-assets`, then played the synthetic Release M4A while the Mac Agent was not involved.
+- The Firebase project still uses only Spark Authentication and Firestore. No Storage, Functions, Hosting, Billing, Blaze, or payment method was added for stage 4.

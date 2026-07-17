@@ -154,3 +154,47 @@ Completed: 2026-07-17.
 ### Next
 
 - Stage 4: bookshelf playback, chapter/timeline navigation, resume position, mobile controls, offline behavior, and real-device playback verification.
+
+## Stage 4: Multi-Book Playback and Cross-Device Reader
+
+Completed: 2026-07-17.
+
+### Completed
+
+- Added per-book audio and bookmark listeners, active-book priority 300, background-book priority 100, and automatic `INACTIVE_48_HOURS` pause/resume behavior.
+- Added a persistent audio player with play/pause, 15-second seek, speed control, sleep timer, chapter and paragraph jumps, bookmarks, Media Session actions, and automatic chunk-to-chunk playback.
+- Added timeline-driven paragraph highlighting and independent position, audio, chapter, and bookmark state when switching between books.
+- Added five-second local position saves, cloud sync on key playback events, pending-sync recovery, and optimistic version conflict handling.
+- Added clear Mac-off states: published audio remains playable, while missing audio waits for the Mac instead of failing or loading Qwen in the browser.
+- Added owner-requested audio repair with a deletion-generation barrier so stale workers cannot overwrite a newer repair request.
+- Added a four-minute Mac heartbeat and a ten-minute web online window.
+- Added rights-gated remote book text for phone reading. Public text and timeline JSON now use the isolated `book-assets` branch because GitHub Release data downloads do not provide browser CORS; M4A audio remains in Releases.
+- Kept the Service Worker limited to the app shell. EPUB, voice, parsed-book, timeline, and M4A files are not precached.
+- Added deterministic desktop and mobile-width Playwright fixtures without shipping the synthetic M4A in the production PWA.
+- Kept the user's real downloaded EPUB `LOCAL_ONLY`; no source, parsed text, generated audio, or voice data from it was uploaded.
+
+### Verification
+
+- Web: 16 tests passed for auth, storage, scheduling, worker heartbeat state, player behavior, and responsive app controls.
+- Firestore Emulator: 19 tests passed, including inactive-book pause/resume, rights-gated text metadata, owner repair requests, worker repair fencing, pairing, isolation, and progress versions.
+- Python: 54 tests passed, including browser-readable repository assets, deterministic text publication, generation recovery, worker heartbeat, and Release publication.
+- Playwright: 6 routine tests passed across desktop Chrome and Pixel 7 emulation for playback, speed, sleep timer, bookmark feedback, two-book switching, reload resume, and responsive controls.
+- A separate real-network Chrome smoke test fetched and decompressed project-created text and timeline files from `book-assets` and played the synthetic GitHub Release M4A without the Mac Agent.
+- Production build, TypeScript, Ruff, strict mypy, dependency audit, free-tier audit, secret scan, and `git diff --check` passed.
+- The generated Service Worker precache contains only six app-shell entries and no book, voice, timeline, or audio media.
+
+### Free Services and Limits
+
+- Firebase remains Spark with no Billing account or payment method; only Authentication and Firestore are used.
+- GitHub Pages serves the app shell, the public data branch serves rights-confirmed text/timelines, and Releases serve public audio.
+- Production TTS remains local to the Mac, one task at a time. No cloud GPU, paid storage, Firebase Hosting, Functions, or larger Actions runner was enabled.
+- Remote assets remain public until manual deletion. Git history and third-party copies cannot be revoked.
+
+### Residual Verification
+
+- Pixel 7 emulation verifies mobile layout and browser behavior, but it is not a physical Android device.
+- Physical iPhone Safari playback, lock-screen controls, interruption handling, and install-to-home-screen behavior remain a later real-device gate.
+
+### Next
+
+- Stage 5: retention/deletion controls, quota dashboard, reconciliation, and recovery UX.

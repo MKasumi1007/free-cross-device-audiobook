@@ -48,6 +48,15 @@ Normal voice and generation flow:
 4. The background Agent processes one task at a time. It pauses instead of loading Qwen when the Mac is on battery or has less than 2 GiB available memory.
 5. A failed or restarted task resumes from its segment checkpoint; completed public assets are verified before Firestore marks them ready.
 
+Normal listening flow:
+
+1. Open a book from the shelf and choose a chapter or paragraph.
+2. The bottom player starts as soon as the first audio chunk is ready; already published audio plays even when the Mac is off.
+3. Use 15-second seek, speed, sleep timer, bookmarks, or the phone lock-screen controls as needed.
+4. Position is saved locally during playback and synced on pause, chapter jump, chunk completion, and other key events.
+5. Opening another book gives it generation priority. A queued book not opened for 48 hours pauses automatically and resumes when reopened.
+6. If an asset is missing or damaged, use `重新准备`; the request waits safely until the Mac Agent can repair it.
+
 The anonymous Agent refresh token is stored only in macOS Keychain. Real books, voice samples, parsed text, generated audio, OAuth tokens, cookies, and account credentials must never be added to Git.
 
-Firebase Hosting is intentionally unused. The production static site uses GitHub Pages; long-form audio generation remains local to the Mac. Remote audio is retained until an explicit manual deletion and is never moved to a paid service automatically.
+Firebase Hosting is intentionally unused. The production static site uses GitHub Pages; browser-readable text and timelines for rights-confirmed books use the public `book-assets` branch, and audio uses public Releases. Long-form generation remains local to the Mac. Remote assets are retained until an explicit manual deletion and are never moved to a paid service automatically.

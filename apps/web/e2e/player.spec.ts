@@ -1,0 +1,63 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { expect, test } from "@playwright/test";
+
+const fixture = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures/synthetic-tone.m4a",
+);
+
+test.beforeEach(async ({ page }) => {
+  await page.route("https://e2e.invalid/**", async (route) => {
+    await route.fulfill({
+      path: fixture,
+      contentType: "audio/mp4",
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store",
+      },
+    });
+  });
+  await page.goto("?e2e=player");
+  await expect(page.getByRole("heading", { name: "山窗小札" }).first()).toBeVisible();
+});
+
+test("plays, navigates, bookmarks, and switches books without mixing state", async ({ page }) => {
+  const play = page.getByRole("button", { name: "播放" });
+  await expect(play).toBeEnabled();
+  await play.click();
+  await expect(page.getByRole("button", { name: "暂停" })).toBeVisible();
+  await page.getByLabel("播放速度").selectOption("1.5");
+  await expect(page.getByLabel("播放速度")).toHaveValue("1.5");
+  await page.getByLabel("睡眠定时").selectOption("15");
+
+  await page.getByRole("button", { name: "书签" }).click();
+  await expect(page.getByRole("status")).toContainText("登录同步后");
+
+  await page.getByLabel("返回书架").click();
+  await page.getByRole("button", { name: /山窗小札 · 第二册/ }).click();
+  await expect(page.getByRole("heading", { name: "山窗小札 · 第二册" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "播放" })).toBeEnabled();
+});
+
+test("restores a deliberately selected reading position after reload", async ({ page }) => {
+  const text = page.getByText("水在壶中渐响，我把昨日读到的地方重新翻开。", { exact: true });
+  await text.click();
+  await expect(text).toHaveClass(/reader-segment--selected/);
+  await page.reload();
+  const restored = page.getByText("水在壶中渐响，我把昨日读到的地方重新翻开。", { exact: true });
+  await expect(restored).toHaveClass(/reader-segment--selected/);
+});
+
+test("uses the correct responsive controls", async ({ page }, testInfo) => {
+  await expect(page.getByLabel("听书播放器")).toBeVisible();
+  if (testInfo.project.name === "mobile-chrome") {
+    await page.getByLabel("返回书架").click();
+    await expect(page.getByText("请在 Mac 上添加新书")).toBeVisible();
+    await expect(page.getByRole("button", { name: /添加书籍/ })).toHaveCount(0);
+  } else {
+    await page.getByLabel("返回书架").click();
+    await expect(page.getByRole("button", { name: /添加书籍/ })).toBeVisible();
+  }
+});

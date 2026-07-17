@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from audiobook_core.models import PublicationMode
+from audiobook_core.parser import parse_book
 from mac_agent.firebase_rest import FirebasePublicConfig, FirebaseRestClient, Identity
 from mac_agent.generation import ChunkJob, PublishedAsset, PublishedChunk, SegmentJob
 from mac_agent.task_cloud import FirestoreWorkerTasks
@@ -95,6 +97,16 @@ def test_worker_lists_and_claims_only_metadata_without_book_text() -> None:
     assert "书籍正文" not in body
     assert "private-id-token" not in body
     assert deadline not in body
+
+
+def test_worker_presence_uses_server_time_without_exposing_tokens() -> None:
+    transport = FakeTransport([(200, {"writeResults": [{}]})])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+    tasks.touch_presence()
+    body = (transport.requests[-1][3] or b"").decode()
+    assert "last_seen_at" in body
+    assert "REQUEST_TIME" in body
+    assert "private-id-token" not in body
 
 
 def test_worker_auto_resumes_only_safe_paused_reasons() -> None:
@@ -193,3 +205,64 @@ def test_existing_matching_ready_metadata_does_not_write_again() -> None:
     timeline = PublishedAsset(11, "timeline", "url", 50, "c" * 64)
     tasks.record_ready(task, job, PublishedChunk("chunk-a", 12.5, audio, timeline))
     assert len(transport.requests) == 1
+
+
+def test_failed_playback_metadata_can_be_repaired_by_current_lease() -> None:
+    transport = FakeTransport([
+        (200, document("users/owner-a/books/book-a/audioChunks/chunk-a", {
+            "status": "FAILED_RETRYABLE",
+            "task_id": "task-a",
+            "deletion_generation": 4,
+        })),
+        (200, {"writeResults": [{"updateTime": "2026-07-17T09:03:00Z"}]}),
+    ])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+    task = tasks._task("owner-a", document("users/owner-a/generationRequests/task-a", {
+        "task_id": "task-a",
+        "book_id": "book-a",
+        "status": "UPLOADING",
+        "priority": 300,
+        "attempt_id": 3,
+        "deletion_generation": 4,
+        "lease_token": "secure-lease",
+    }))
+    segment = SegmentJob("segment-a", "chapter-a", 0, "测试", "a" * 64)
+    job = ChunkJob(
+        "task-a", "book-a", "chunk-a", "chapter-a",
+        publication_mode=PublicationMode.PUBLIC_RIGHTS_CONFIRMED,
+        voice_version="voice-a", attempt_id=3, lease_token="secure-lease",
+        deletion_generation=4, segments=(segment,),
+    )
+    audio = PublishedAsset(20, "audio.m4a", "url", 100, "b" * 64)
+    timeline = PublishedAsset(21, "timeline", "url", 50, "c" * 64)
+    tasks.record_ready(task, job, PublishedChunk("chunk-a", 12.5, audio, timeline))
+    body = (transport.requests[-1][3] or b"").decode()
+    assert '"asset_id":{"integerValue":"20"}' in body
+    assert '"updateTime":"2026-07-17T09:00:00Z"' in body
+
+
+def test_book_text_asset_metadata_is_reused_and_recorded(tmp_path: Path) -> None:
+    transport = FakeTransport([
+        (200, document("users/owner-a/books/book-a", {
+            "text_status": "READY",
+            "text_asset_id": 30,
+            "text_asset_name": "book-text.json.gz",
+            "text_asset_url": "https://example.test/book-text.json.gz",
+            "text_sha256": "d" * 64,
+            "text_byte_size": 400,
+        })),
+        (200, {"writeResults": [{}]}),
+    ])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+    existing = tasks.book_text_asset("owner-a", "book-a")
+    assert existing is not None
+    assert existing.asset_id == 30
+    assert existing.created is False
+
+    source = tmp_path / "book.txt"
+    source.write_text("项目自制正文。", encoding="utf-8")
+    book = parse_book(source, rights_confirmed=True)
+    tasks.record_book_text("owner-a", book, existing)
+    body = (transport.requests[-1][3] or b"").decode()
+    assert "text_asset_url" in body
+    assert "private-id-token" not in body

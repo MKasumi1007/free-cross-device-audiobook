@@ -7,7 +7,9 @@ from typing import Any
 from urllib.parse import quote
 
 from .firebase_rest import FirebaseRestClient
-from .generation import ChunkJob, GenerationError, PublishedChunk
+from audiobook_core.models import ParsedBook
+
+from .generation import ChunkJob, GenerationError, PublishedAsset, PublishedChunk
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,28 @@ class FirestoreWorkerTasks:
             return None
         owner = fields.get("owner_uid")
         return str(owner) if owner else None
+
+    def touch_presence(self) -> None:
+        identity = self.client.authenticate()
+        payload = {
+            "writes": [
+                {
+                    "transform": {
+                        "document": self._document_name(f"workerLinks/{identity.local_id}"),
+                        "fieldTransforms": [
+                            {"fieldPath": "last_seen_at", "setToServerValue": "REQUEST_TIME"}
+                        ],
+                    }
+                }
+            ]
+        }
+        self.client._json_request(
+            "更新 Mac 在线状态",
+            "POST",
+            self._commit_url(),
+            payload=payload,
+            id_token=identity.id_token,
+        )
 
     def next_task(self, owner_uid: str) -> CloudTask | None:
         tasks = self._query_by_status(owner_uid, ["QUEUED", "FAILED_RETRYABLE", "PAUSED"])
@@ -168,7 +192,12 @@ class FirestoreWorkerTasks:
                 and current.get("timeline_asset_id") == published.timeline.asset_id
             ):
                 return
-            raise GenerationError("AUDIO_METADATA_CONFLICT", "已有音频记录与本次发布不一致。")
+            if not (
+                current.get("status") == "FAILED_RETRYABLE"
+                and current.get("task_id") == task.task_id
+                and current.get("deletion_generation") == job.deletion_generation
+            ):
+                raise GenerationError("AUDIO_METADATA_CONFLICT", "已有音频记录与本次发布不一致。")
         fields = {
             "owner_uid": self._string(task.owner_uid),
             "task_id": self._string(task.task_id),
@@ -192,23 +221,82 @@ class FirestoreWorkerTasks:
             "voice_version": self._string(job.voice_version),
             "deletion_generation": self._integer(job.deletion_generation),
         }
-        payload = {
-            "writes": [
-                {
-                    "update": {"name": self._document_name(path), "fields": fields},
-                    "currentDocument": {"exists": False},
-                    "updateTransforms": [
-                        {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"},
-                        {"fieldPath": "completed_at", "setToServerValue": "REQUEST_TIME"},
-                    ],
-                }
-            ]
+        write: dict[str, Any] = {
+            "update": {"name": self._document_name(path), "fields": fields},
+            "currentDocument": (
+                {"updateTime": str(existing["updateTime"])}
+                if existing.get("name")
+                else {"exists": False}
+            ),
+            "updateTransforms": [
+                {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"},
+                {"fieldPath": "completed_at", "setToServerValue": "REQUEST_TIME"},
+            ],
         }
+        payload = {"writes": [write]}
         self.client._json_request(
             "保存可播放音频",
             "POST",
             self._commit_url(),
             payload=payload,
+            id_token=identity.id_token,
+        )
+
+    def book_text_asset(self, owner_uid: str, book_id: str) -> PublishedAsset | None:
+        identity = self.client.authenticate()
+        path = f"users/{owner_uid}/books/{book_id}"
+        _, value = self.client._json_request(
+            "检查远程正文",
+            "GET",
+            self._document_url(path),
+            id_token=identity.id_token,
+            allowed_statuses=frozenset({200, 404}),
+        )
+        fields = self._fields(value)
+        if fields.get("text_status") != "READY" or not fields.get("text_asset_url"):
+            return None
+        try:
+            return PublishedAsset(
+                asset_id=int(fields["text_asset_id"]),
+                name=str(fields.get("text_asset_name") or ""),
+                url=str(fields["text_asset_url"]),
+                byte_size=int(fields["text_byte_size"]),
+                sha256=str(fields["text_sha256"]),
+                created=False,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def record_book_text(
+        self,
+        owner_uid: str,
+        book: ParsedBook,
+        asset: PublishedAsset,
+    ) -> None:
+        identity = self.client.authenticate()
+        path = f"users/{owner_uid}/books/{book.book_id}"
+        fields = {
+            "text_status": self._string("READY"),
+            "text_asset_id": self._integer(asset.asset_id),
+            "text_asset_name": self._string(asset.name),
+            "text_asset_url": self._string(asset.url),
+            "text_sha256": self._string(asset.sha256),
+            "text_byte_size": self._integer(asset.byte_size),
+            "text_schema_version": self._integer(1),
+        }
+        masks = list(fields)
+        write = {
+            "update": {"name": self._document_name(path), "fields": fields},
+            "updateMask": {"fieldPaths": masks},
+            "updateTransforms": [
+                {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"}
+            ],
+        }
+        self.client._json_request(
+            "保存远程正文信息",
+            "POST",
+            self._commit_url(),
+            payload={"writes": [write]},
             id_token=identity.id_token,
         )
 

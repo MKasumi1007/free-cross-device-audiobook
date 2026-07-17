@@ -2,7 +2,7 @@
 
 This repository implements the separately maintained v1.3 product specification.
 
-Current status: stage 3 local voice setup, resumable Mac generation, guarded public Release publishing, background startup, and web controls are implemented and verified.
+Current status: stage 4 multi-book scheduling, cross-device reading and playback, resume, bookmarks, chapter navigation, mobile controls, and remote-asset recovery are implemented and verified.
 
 ## Fixed Decisions
 
@@ -11,7 +11,7 @@ Current status: stage 3 local voice setup, resumable Mac generation, guarded pub
 - The project must not require a payment method or enable usage-based billing.
 - New books are added on the Mac only.
 - Real voice samples remain on the Mac by default.
-- Rights-confirmed books and generated audio may be stored as public GitHub Release assets.
+- Rights-confirmed parsed text and timelines may be stored on the public `book-assets` branch; generated audio may be stored as public GitHub Release assets.
 - Remote audio remains available until the user manually deletes it.
 
 No real book, voice sample, generated audiobook, credential, or model cache belongs in Git history.
@@ -34,8 +34,13 @@ No real book, voice sample, generated audiobook, credential, or model cache belo
 - A single background generation worker with lease fencing, AC-power and memory guards, and idle TTS-model unloading.
 - Idempotent GitHub Release publication with stable asset names, byte/hash verification, and HTTP Range verification.
 - A private LaunchAgent runtime under macOS Application Support so normal use does not require Terminal.
+- Active-book generation priority, 48-hour inactive-book pause/resume, and independent state for multiple books.
+- A persistent player with chapter jumps, paragraph highlighting, 15-second seek, speed control, sleep timer, bookmarks, Media Session controls, and automatic chunk-to-chunk playback.
+- Frequent local progress saves plus version-fenced cloud sync on key playback events.
+- Browser-readable, SHA-256-verified public text and timeline data on an isolated GitHub branch.
+- Desktop and mobile-width Playwright coverage, including two-book switching and reload resume.
 
-No TTS model is loaded while browsing, importing, logging in, syncing, or waiting for work. The model starts only for an eligible generation task and unloads after idle time. The current downloaded EPUB remains local-only and cannot be queued for public Release publication without a separate rights confirmation.
+No TTS model is loaded while browsing, importing, logging in, syncing, playing existing audio, or waiting for work. The model starts only for an eligible generation task and unloads after idle time. The current downloaded EPUB remains local-only and cannot be queued for public publication without a separate rights confirmation.
 
 The active Firebase project remains on Spark (`$0`) with no Billing account. Only Authentication and Firestore are used; Storage, Functions, Firebase Hosting, Analytics, and Gemini are not enabled.
 

@@ -59,5 +59,7 @@ jobs:
           mypy services/audiobook-core/src apps/mac-agent/src
       - name: Run project tests
         run: npm test
+      - name: Run desktop and mobile browser tests
+        run: npm run test:e2e
       - name: Build the PWA
         run: npm run build

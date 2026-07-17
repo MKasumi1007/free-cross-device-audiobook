@@ -5,7 +5,7 @@
 - Source code and project documentation.
 - Synthetic, public-domain, or redistribution-licensed fixtures.
 - Books the user confirms they may publicly redistribute.
-- Audio, timelines, covers, and parsed text derived from those books.
+- Audio, timelines, covers, and parsed text derived from those books. Parsed text and timelines use the public `book-assets` branch because browsers cannot directly fetch Release data files across origins.
 
 The required confirmation is:
 
@@ -36,4 +36,4 @@ Generation is denied for `LOCAL_ONLY` books. The currently imported downloaded E
 
 ## Public-Asset Warning
 
-GitHub Release assets in a public repository can be copied by anyone. Deleting an asset cannot revoke third-party downloads or caches.
+GitHub Release assets and files on the public `book-assets` branch can be copied by anyone. Deleting a remote asset cannot revoke third-party downloads, Git history, or caches.
