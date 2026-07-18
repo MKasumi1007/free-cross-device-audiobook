@@ -14,6 +14,7 @@ from tests.fixtures.builders import (
     make_epub3_nav,
     make_epub_without_toc,
     make_high_ratio_epub,
+    make_epub_with_placeholder_nav,
     make_traversal_epub,
 )
 
@@ -42,6 +43,11 @@ def test_epub_without_toc_falls_back_to_spine(tmp_path: Path) -> None:
     book = parse_book(make_epub_without_toc(tmp_path / "fallback.epub"))
     assert [chapter.title for chapter in book.chapters] == ["第一札", "第二札"]
     assert any("正文顺序" in warning for warning in book.warnings)
+
+
+def test_placeholder_nav_title_uses_first_readable_line(tmp_path: Path) -> None:
+    book = parse_book(make_epub_with_placeholder_nav(tmp_path / "placeholder.epub"))
+    assert [chapter.title for chapter in book.chapters] == ["献给倾听我故事的伦纳德"]
 
 
 @pytest.mark.parametrize(

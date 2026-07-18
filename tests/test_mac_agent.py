@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import subprocess
 
@@ -9,6 +10,9 @@ from mac_agent.app import create_app
 from mac_agent.library import LocalLibrary
 from mac_agent.pairing import PairingCode
 from mac_agent.voice import VoiceRegistry
+from tests.fixtures.builders import make_epub_with_placeholder_nav
+
+from audiobook_core.parser import parse_book
 
 
 class FakePicker:
@@ -118,6 +122,19 @@ def test_import_uses_native_picker_and_one_time_csrf(tmp_path: Path) -> None:
     assert reused.status_code == 403
     assert picker.calls == 1
 
+
+def test_existing_library_repairs_placeholder_chapter_title(tmp_path: Path) -> None:
+    parsed = parse_book(make_epub_with_placeholder_nav(tmp_path / "placeholder.epub"))
+    payload = parsed.to_dict()
+    payload["chapters"][0]["title"] = "Section0001"
+    stored = tmp_path / "library" / parsed.book_id / "book.json"
+    stored.parent.mkdir(parents=True)
+    stored.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    loaded = LocalLibrary(tmp_path / "library", FakePicker(None)).get(parsed.book_id)
+
+    assert loaded is not None
+    assert loaded.chapters[0].title == "献给倾听我故事的伦纳德"
 
 def test_request_cannot_supply_an_arbitrary_file_path(tmp_path: Path) -> None:
     picker = FakePicker(None)

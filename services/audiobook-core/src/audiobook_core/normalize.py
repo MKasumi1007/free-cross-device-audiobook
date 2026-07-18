@@ -10,6 +10,10 @@ from .models import Chapter, SegmentKind, TextSegment
 
 SPACE_RE = re.compile(r"[\t\f\v ]+")
 BLANK_RE = re.compile(r"\n{3,}")
+PLACEHOLDER_CHAPTER_RE = re.compile(
+    r"^(?:section|split|text|page|xhtml|item)[\s_-]*0*\d+$",
+    re.IGNORECASE,
+)
 
 
 def normalize_display_text(value: str) -> str:
@@ -21,6 +25,23 @@ def normalize_display_text(value: str) -> str:
 def normalize_spoken_text(value: str) -> str:
     value = normalize_display_text(value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def is_placeholder_chapter_title(value: str) -> bool:
+    """Return true for machine-generated labels such as ``Section0001``."""
+    return bool(PLACEHOLDER_CHAPTER_RE.fullmatch(normalize_spoken_text(value)))
+
+
+def concise_chapter_title(value: str, *, max_chars: int = 48) -> str:
+    """Turn the first readable line into a compact chapter label."""
+    value = normalize_spoken_text(value)
+    if len(value) <= max_chars:
+        return value
+    for mark in "。！？!?；;":
+        end = value.find(mark)
+        if 3 <= end < max_chars:
+            return value[: end + 1]
+    return f"{value[:max_chars].rstrip()}…"
 
 
 def sha256_text(value: str) -> str:

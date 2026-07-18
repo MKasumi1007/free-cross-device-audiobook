@@ -7,7 +7,12 @@ from bs4 import BeautifulSoup, Tag
 from bs4.element import NavigableString
 
 from .models import SegmentKind
-from .normalize import normalize_display_text, normalize_spoken_text
+from .normalize import (
+    concise_chapter_title,
+    is_placeholder_chapter_title,
+    normalize_display_text,
+    normalize_spoken_text,
+)
 
 
 SKIP_TAGS = {
@@ -63,6 +68,12 @@ def _top_level_blocks(root: Tag) -> Iterable[Tag]:
 
 def extract_html_blocks(content: bytes, source_href: str) -> tuple[str, list[tuple[str, str, SegmentKind]]]:
     soup = BeautifulSoup(content, "html.parser")
+    title_tag = soup.find("title")
+    document_title = (
+        normalize_display_text(_node_text(title_tag, spoken=False))
+        if title_tag
+        else ""
+    )
     for tag in soup.find_all(SKIP_TAGS):
         tag.decompose()
     root = soup.body or soup
@@ -79,7 +90,11 @@ def extract_html_blocks(content: bytes, source_href: str) -> tuple[str, list[tup
         )
         spoken = "" if footnote else normalize_spoken_text(_node_text(tag, spoken=True))
         blocks.append((display, spoken, kind))
-        if not title and kind is SegmentKind.HEADING:
+        if (
+            not title
+            and kind is SegmentKind.HEADING
+            and not is_placeholder_chapter_title(display)
+        ):
             title = display
 
     if not blocks:
@@ -88,10 +103,22 @@ def extract_html_blocks(content: bytes, source_href: str) -> tuple[str, list[tup
         if display:
             blocks.append((display, spoken, SegmentKind.PARAGRAPH))
 
+    source_title = source_href.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    if not title and document_title and not is_placeholder_chapter_title(document_title):
+        title = document_title
+    if not title and source_title and not is_placeholder_chapter_title(source_title):
+        title = source_title
     if not title:
-        title_tag = soup.find("title")
-        if title_tag:
-            title = normalize_display_text(_node_text(title_tag, spoken=False))
+        readable = next(
+            (
+                display
+                for display, _spoken, kind in blocks
+                if kind is not SegmentKind.FOOTNOTE
+                and not is_placeholder_chapter_title(display)
+            ),
+            "",
+        )
+        title = concise_chapter_title(readable)
     if not title:
-        title = source_href.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        title = source_title
     return title, blocks

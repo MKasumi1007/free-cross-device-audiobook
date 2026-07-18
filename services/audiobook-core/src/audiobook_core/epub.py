@@ -14,7 +14,7 @@ from defusedxml import ElementTree as SafeET
 from .errors import BookParseError
 from .html_text import extract_html_blocks
 from .models import Chapter, ParserLimits
-from .normalize import make_chapter, normalize_display_text
+from .normalize import is_placeholder_chapter_title, make_chapter, normalize_display_text
 
 
 @dataclass(frozen=True)
@@ -190,7 +190,12 @@ def parse_epub_chapters(
             if not blocks:
                 warnings.append(f"已跳过没有正文的页面：{item.path}")
                 continue
-            chapter_title = toc_titles.get(item.path, fallback_title)
+            toc_title = toc_titles.get(item.path, "")
+            chapter_title = (
+                fallback_title
+                if is_placeholder_chapter_title(toc_title)
+                else toc_title or fallback_title
+            )
             chapters.append(
                 make_chapter(
                     source_sha256=source_sha256,

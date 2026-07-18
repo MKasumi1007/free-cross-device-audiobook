@@ -336,24 +336,30 @@ class MacGenerationWorker:
         if book.book_id in self._published_books:
             return
         existing = self.tasks.book_text_asset(task.owner_uid, book.book_id)
-        if existing is None:
-            if book.publication_mode is PublicationMode.LOCAL_ONLY:
-                private_publisher = FirestorePrivateAssetPublisher(
-                    self.tasks.client,
-                    task.owner_uid,
-                    task_id=task.task_id,
-                )
-                asset = BookTextPublisher(
-                    self.work_root / "books",
-                    private_publisher,
-                    allow_local_only=True,
-                ).publish(book)
-            else:
-                public_publisher = GitHubRepositoryAssetPublisher(self.repository)
-                asset = BookTextPublisher(
-                    self.work_root / "books",
-                    public_publisher,
-                ).publish(book)
+        if book.publication_mode is PublicationMode.LOCAL_ONLY:
+            private_publisher = FirestorePrivateAssetPublisher(
+                self.tasks.client,
+                task.owner_uid,
+                task_id=task.task_id,
+            )
+            asset = BookTextPublisher(
+                self.work_root / "books",
+                private_publisher,
+                allow_local_only=True,
+            ).publish(book)
+            if existing is None or existing.sha256 != asset.sha256:
+                self.tasks.record_book_text(task.owner_uid, book, asset)
+                if existing and existing.private_key != asset.private_key:
+                    private_publisher.delete_private(
+                        existing.private_key,
+                        part_count=existing.part_count or None,
+                    )
+        elif existing is None:
+            public_publisher = GitHubRepositoryAssetPublisher(self.repository)
+            asset = BookTextPublisher(
+                self.work_root / "books",
+                public_publisher,
+            ).publish(book)
             self.tasks.record_book_text(task.owner_uid, book, asset)
         self._published_books.add(book.book_id)
 

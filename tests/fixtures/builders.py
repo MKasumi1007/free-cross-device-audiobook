@@ -93,6 +93,25 @@ def make_epub_without_toc(path: Path) -> Path:
     )
 
 
+def make_epub_with_placeholder_nav(path: Path) -> Path:
+    opf = """<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>献词测试</dc:title></metadata>
+<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="one" href="Section0001.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="one"/></spine></package>"""
+    nav = """<html><body><nav><a href="Section0001.xhtml">Section0001</a></nav></body></html>"""
+    dedication = """<html><head><title>Section0001</title></head><body>
+<p>献给倾听我故事的伦纳德</p><p>以及所有帮助过我的朋友</p></body></html>"""
+    return _write_epub(
+        path,
+        {
+            "OEBPS/content.opf": opf,
+            "OEBPS/nav.xhtml": nav,
+            "OEBPS/Section0001.xhtml": dedication,
+        },
+    )
+
+
 def make_empty_epub(path: Path) -> Path:
     opf = """<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata/>
 <manifest><item id="x" href="x.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="x"/></spine></package>"""

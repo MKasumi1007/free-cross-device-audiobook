@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import secrets
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from audiobook_core.models import ParsedBook
+from audiobook_core.normalize import concise_chapter_title, is_placeholder_chapter_title
 from audiobook_core.parser import parse_book
 
 from .picker import BookPicker
@@ -66,7 +68,7 @@ class LocalLibrary:
                 for segment in raw_chapter["segments"]
             )
             chapters.append(Chapter(**{**raw_chapter, "segments": segments}))
-        return ParsedBook(
+        book = ParsedBook(
             **{
                 **payload,
                 "publication_mode": PublicationMode(payload["publication_mode"]),
@@ -74,6 +76,23 @@ class LocalLibrary:
                 "warnings": tuple(payload.get("warnings", [])),
             }
         )
+        repaired = []
+        for chapter in book.chapters:
+            if not is_placeholder_chapter_title(chapter.title):
+                repaired.append(chapter)
+                continue
+            readable = next(
+                (
+                    segment.display_text
+                    for segment in chapter.segments
+                    if segment.kind is not SegmentKind.FOOTNOTE
+                    and not is_placeholder_chapter_title(segment.display_text)
+                ),
+                "",
+            )
+            title = concise_chapter_title(readable)
+            repaired.append(replace(chapter, title=title) if title else chapter)
+        return replace(book, chapters=tuple(repaired))
 
     def _save(self, book: ParsedBook) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
