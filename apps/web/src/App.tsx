@@ -43,6 +43,7 @@ import {
 } from "./pairing";
 import { PlayerDock, type PlayerJumpRequest, type PlayerPosition } from "./PlayerDock";
 import { canAddBooks, currentPlatformSignals } from "./platform";
+import { firstPlayableSegmentIdForChapter } from "./player";
 import {
   bookMetadataNeedsSync,
   cacheCloudBooks,
@@ -687,7 +688,11 @@ export function App() {
 
   function openChapter(chapter: Chapter) {
     setSelectedChapterId(chapter.chapter_id);
-    const segmentId = chapter.segments[0]?.segment_id || "";
+    const segmentId = selectedBook
+      ? firstPlayableSegmentIdForChapter(selectedBook, audioChunks, chapter.chapter_id)
+        ?? chapter.segments[0]?.segment_id
+        ?? ""
+      : "";
     setSelectedSegmentId(segmentId);
     if (segmentId) requestPlayerJump(segmentId);
   }

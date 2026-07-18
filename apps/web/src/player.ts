@@ -63,6 +63,19 @@ export function chunkForSegment(
   });
 }
 
+export function firstPlayableSegmentIdForChapter(
+  book: ParsedBook,
+  chunks: AudioChunk[],
+  chapterId: string,
+): string | undefined {
+  const chapter = book.chapters.find((item) => item.chapter_id === chapterId);
+  if (!chapter) return undefined;
+  const segmentIds = new Set(chapter.segments.map((segment) => segment.segment_id));
+  return readyChunks(book, chunks).find((chunk) => (
+    segmentIds.has(chunk.start_segment_id)
+  ))?.start_segment_id;
+}
+
 export function textSegmentById(book: ParsedBook, segmentId: string): TextSegment | undefined {
   for (const chapter of book.chapters) {
     const segment = chapter.segments.find((item) => item.segment_id === segmentId);

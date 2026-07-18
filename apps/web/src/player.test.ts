@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { AudioChunk } from "./cloud";
 import { demoBook } from "./demo";
-import { chunkForSegment, formatPlaybackTime, readyChunks, timelineSegmentAt } from "./player";
+import {
+  chunkForSegment,
+  firstPlayableSegmentIdForChapter,
+  formatPlaybackTime,
+  readyChunks,
+  timelineSegmentAt,
+} from "./player";
 
 function chunk(
   chunkId: string,
@@ -60,6 +66,17 @@ describe("audiobook player planning", () => {
     };
 
     expect(readyChunks(demoBook, [privateChunk])).toEqual([privateChunk]);
+  });
+
+  it("opens a chapter at its first generated segment instead of its first text segment", () => {
+    const chapter = demoBook.chapters[0]!;
+    const generatedLater = chapter.segments[1]!.segment_id;
+
+    expect(firstPlayableSegmentIdForChapter(
+      demoBook,
+      [chunk("partial", generatedLater, generatedLater)],
+      chapter.chapter_id,
+    )).toBe(generatedLater);
   });
 
   it("maps audio time to text and formats player time", () => {
