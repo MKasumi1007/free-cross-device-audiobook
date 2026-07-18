@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from .firebase_rest import FirebaseRestClient
 from .generation import GenerationError, PublishedAsset
+from .error_reporting import reporter
 
 
 PRIVATE_PART_BYTES = 512 * 1024
@@ -113,8 +114,13 @@ class FirestorePrivateAssetPublisher:
         except Exception as error:
             try:
                 self.delete_private(asset_key, part_count=part_count)
-            except Exception:
-                pass
+            except Exception as rollback_error:
+                reporter.record(
+                    "private_assets.rollback_upload",
+                    rollback_error,
+                    code=getattr(rollback_error, "code", "PRIVATE_ROLLBACK_FAILED"),
+                    details={"asset_key": asset_key, "original_error": repr(error)},
+                )
             if isinstance(error, GenerationError):
                 raise
             raise GenerationError(

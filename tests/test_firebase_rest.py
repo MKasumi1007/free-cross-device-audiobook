@@ -4,7 +4,15 @@ import json
 import ssl
 from typing import Any
 
-from mac_agent.firebase_rest import FirebasePublicConfig, FirebaseRestClient, Identity, UrllibTransport
+import pytest
+
+from mac_agent.firebase_rest import (
+    FirebasePublicConfig,
+    FirebaseRestClient,
+    FirebaseRestError,
+    Identity,
+    UrllibTransport,
+)
 
 
 class FakeTokenStore:
@@ -153,3 +161,19 @@ def test_link_status_distinguishes_active_and_revoked_workers() -> None:
     )
     revoked._identity = Identity("id-token", "refresh-token", "worker-1")
     assert revoked.is_linked() is False
+
+
+def test_firestore_permission_error_keeps_private_response_details() -> None:
+    transport = FakeTransport([(403, {"error": {"status": "PERMISSION_DENIED"}})])
+    client = FirebaseRestClient(
+        FirebasePublicConfig(api_key="public-web-key", project_id="demo-project"),
+        token_store=FakeTokenStore(),
+        transport=transport,
+    )
+
+    with pytest.raises(FirebaseRestError) as captured:
+        client._json_request("读取私密数据", "GET", "https://example.test")
+
+    assert captured.value.code == "FIRESTORE_PERMISSION_DENIED"
+    assert captured.value.details["http_status"] == 403
+    assert "PERMISSION_DENIED" in captured.value.details["response"]

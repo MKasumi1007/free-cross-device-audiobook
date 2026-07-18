@@ -42,7 +42,7 @@ class ResourcePolicy:
             return "USER_PAUSED"
         if settings.only_on_ac_power and not self._on_ac_power():
             return "WAITING_FOR_AC_POWER"
-        available = self._available_memory_bytes()
+        available = self.available_memory_bytes()
         if available is not None and available < settings.minimum_available_memory_bytes:
             return "MEMORY_PRESSURE"
         return None
@@ -58,7 +58,7 @@ class ResourcePolicy:
         return "AC Power" in result.stdout
 
     @staticmethod
-    def _available_memory_bytes() -> int | None:
+    def available_memory_bytes() -> int | None:
         result = subprocess.run(
             ["vm_stat"],
             capture_output=True,

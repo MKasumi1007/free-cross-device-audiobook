@@ -16,6 +16,7 @@ const pairingMocks = vi.hoisted(() => ({
 
 vi.mock("./firebase", () => ({
   firebaseIsConfigured: () => testState.firebaseConfigured,
+  checkFirestoreConnection: vi.fn(async () => undefined),
 }));
 
 vi.mock("./auth", () => ({
@@ -45,9 +46,21 @@ vi.mock("./agent", () => ({
     configured: false,
     preview: { state: "IDLE", error: "", model_loaded: false },
   })),
+  getAgentDiagnostics: vi.fn(async () => ({
+    schema_version: 1,
+    checked_at: "2026-07-18T00:00:00Z",
+    agent_version: "0.2.0",
+    agent_port: 17832,
+    data_root: "/private/application-support",
+    log_path: "/private/application-support/logs/diagnostics.jsonl",
+    worker: { state: "IDLE", error: "", model_loaded: false },
+    recent_error: null,
+    items: [],
+  })),
+  startAgentRepair: vi.fn(async () => undefined),
+  loadVoicePreview: vi.fn(async () => new Blob()),
   startPairingOnMac: vi.fn(),
   startVoicePreview: vi.fn(),
-  voicePreviewUrl: vi.fn(() => "http://127.0.0.1:17832/v1/voice/preview.m4a"),
 }));
 
 vi.mock("./cloud", () => ({
@@ -102,6 +115,9 @@ describe("书架响应式入口", () => {
     fireEvent.click(screen.getByRole("button", { name: "我的声音" }));
     expect(screen.getByRole("heading", { name: "设置我的声音" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("在这里填写录音中说的全部文字")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "系统状态" }));
+    expect(await screen.findByRole("heading", { name: "系统状态" })).toBeInTheDocument();
+    expect(await screen.findByText("Agent 版本")).toBeInTheDocument();
   });
 
   it("手机视口不显示添加按钮，并提示去 Mac 添加", async () => {

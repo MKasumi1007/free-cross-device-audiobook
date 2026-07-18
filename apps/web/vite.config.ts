@@ -2,10 +2,30 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
+import packageInfo from "./package.json";
+
+const buildId = process.env.VITE_GIT_SHA || process.env.GITHUB_SHA || "development";
+const builtAt = new Date().toISOString();
+
 export default defineConfig({
   base: "/free-cross-device-audiobook/",
+  define: {
+    __APP_VERSION__: JSON.stringify(packageInfo.version),
+    __BUILD_ID__: JSON.stringify(buildId),
+    __BUILD_TIME__: JSON.stringify(builtAt),
+  },
   plugins: [
     react(),
+    {
+      name: "build-version",
+      generateBundle() {
+        this.emitFile({
+          type: "asset",
+          fileName: "version.json",
+          source: JSON.stringify({ version: packageInfo.version, build_id: buildId, built_at: builtAt }),
+        });
+      },
+    },
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["seal.svg"],

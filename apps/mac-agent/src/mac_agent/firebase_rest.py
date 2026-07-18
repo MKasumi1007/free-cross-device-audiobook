@@ -14,11 +14,19 @@ from typing import Any, Protocol
 
 import certifi
 
+from .error_reporting import AgentOperationError
 from .keychain import MacOSKeychainTokenStore, TokenStore
 
 
-class FirebaseRestError(RuntimeError):
-    pass
+class FirebaseRestError(AgentOperationError):
+    def __init__(
+        self,
+        user_message: str,
+        *,
+        code: str = "FIREBASE_API_FAILED",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(code, user_message, details=details)
 
 
 class HttpTransport(Protocol):
@@ -55,7 +63,11 @@ class UrllibTransport:
         except urllib.error.HTTPError as error:
             return error.code, error.read()
         except urllib.error.URLError as error:
-            raise FirebaseRestError("暂时无法连接 Firebase，请检查网络后重试。") from error
+            raise FirebaseRestError(
+                "暂时无法连接 Firebase，请检查网络后重试。",
+                code="FIREBASE_NETWORK_ERROR",
+                details={"reason": repr(error.reason)},
+            ) from error
 
 
 @dataclass(frozen=True)
@@ -127,7 +139,22 @@ class FirebaseRestClient:
             headers["Authorization"] = f"Bearer {id_token}"
         status, raw = self.transport.request(method, url, headers=headers, body=body)
         if status not in allowed_statuses:
-            raise FirebaseRestError(f"{label}失败（HTTP {status}），没有保存任何账号凭据。")
+            error_code = (
+                "FIREBASE_LOGIN_FAILED"
+                if status == 401
+                else "FIRESTORE_PERMISSION_DENIED"
+                if status == 403
+                else "FIREBASE_API_FAILED"
+            )
+            raise FirebaseRestError(
+                f"{label}失败（HTTP {status}），没有保存任何账号凭据。",
+                code=error_code,
+                details={
+                    "firebase_operation": label,
+                    "http_status": status,
+                    "response": raw.decode("utf-8", errors="replace")[-4_000:],
+                },
+            )
         if not raw:
             return status, {}
         try:

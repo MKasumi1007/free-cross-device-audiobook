@@ -8,9 +8,9 @@ import {
   chooseVoiceOnMac,
   confirmVoice,
   getVoiceStatus,
+  loadVoicePreview,
   startPairingOnMac,
   startVoicePreview,
-  voicePreviewUrl,
   type VoiceStatus,
 } from "./agent";
 import { signInWithGoogle, signOutCurrentUser, watchAuth } from "./auth";
@@ -56,6 +56,7 @@ import {
   type LocalProgress,
 } from "./storage";
 import { cloudSyncIsPaused, cloudSyncPauseMessage } from "./usage";
+import { SystemStatus } from "./SystemStatus";
 
 const DEMO_BOOK_ID = "356fc83a-1b37-5571-bb94-9d168a6a7c2f";
 const E2E_PLAYER_MODE = import.meta.env.DEV
@@ -151,8 +152,10 @@ export function App() {
   const [showDisconnectMac, setShowDisconnectMac] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
   const [showAudioManager, setShowAudioManager] = useState(false);
+  const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
+  const [voicePreviewObjectUrl, setVoicePreviewObjectUrl] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [workerLinks, setWorkerLinks] = useState<WorkerLink[]>([]);
   const [audioChunks, setAudioChunks] = useState<AudioChunk[]>([]);
@@ -272,6 +275,28 @@ export function App() {
       window.clearTimeout(timer);
     };
   }, [canAdd, showVoice, voiceStatus?.preview.state]);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    if (!showVoice || !voiceStatus?.preview_available || !voiceStatus.voice_version) {
+      setVoicePreviewObjectUrl("");
+      return () => undefined;
+    }
+    void loadVoicePreview(voiceStatus.voice_version)
+      .then((blob) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setVoicePreviewObjectUrl(objectUrl);
+      })
+      .catch((error) => active && setNotice(
+        error instanceof Error ? error.message : "试听音频暂时无法读取。",
+      ));
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [showVoice, voiceStatus?.preview_available, voiceStatus?.voice_version]);
 
   const selectedBook = books.find((book) => book.book_id === selectedBookId);
   const selectedChapter = selectedBook?.chapters.find((chapter) => chapter.chapter_id === selectedChapterId)
@@ -695,6 +720,7 @@ export function App() {
           {user && canAdd && activeMac && <button className="quiet-button header-button is-connected" onClick={() => setShowDisconnectMac(true)}>Mac 已连接</button>}
           {canAdd && <button className="quiet-button header-button" onClick={() => setShowVoice(true)}>{voiceStatus?.confirmed ? "声音已设置" : "我的声音"}</button>}
           {(user || E2E_PLAYER_MODE) && <button className="quiet-button header-button" onClick={() => setShowAudioManager(true)}>音频空间</button>}
+          <button className="quiet-button header-button" onClick={() => setShowSystemStatus(true)}>系统状态</button>
           {user && <button className="account-button" onClick={() => void signOutCurrentUser()} title="点击退出登录">{user.photoURL ? <img src={user.photoURL} alt="" /> : "我"}</button>}
           {canAdd && (
             <button className="add-book-button" onClick={() => setShowImport(true)}>
@@ -714,6 +740,7 @@ export function App() {
             <p>{user ? "书架和阅读位置已在设备间同步，书籍正文仍按权利设置安全保存。" : "书和进度会先安全留在这台设备；登录后可在手机继续。"}</p>
           </section>
           {!canAdd && <p className="mobile-add-hint">请在 Mac 上添加新书</p>}
+          <button className="shelf-status-button" onClick={() => setShowSystemStatus(true)}>检查系统状态</button>
           {(user || E2E_PLAYER_MODE) && (
             <button className="shelf-audio-button" onClick={() => setShowAudioManager(true)}>
               管理已生成音频
@@ -930,8 +957,8 @@ export function App() {
               <>
                 <p>{voiceStatus.confirmed ? "这个声音已经确认，可以直接用来生成听书音频。" : "录音已准备好。先生成并听一下试听，满意后再确认。"}</p>
                 {voiceStatus.preview.state === "GENERATING" && <div className="voice-progress"><i />正在生成试听，完成后这里会自动出现播放器...</div>}
-                {voiceStatus.preview_available && voiceStatus.voice_version && (
-                  <audio className="voice-audio" controls preload="metadata" src={voicePreviewUrl(voiceStatus.voice_version)} />
+                {voiceStatus.preview_available && voiceStatus.voice_version && voicePreviewObjectUrl && (
+                  <audio className="voice-audio" controls preload="metadata" src={voicePreviewObjectUrl} />
                 )}
                 {voiceStatus.preview.error && <p className="voice-error">{voiceStatus.preview.error}</p>}
                 <div className="modal-actions">
@@ -953,6 +980,16 @@ export function App() {
           cloudBooks={cloudBooks}
           initialChunks={E2E_PLAYER_MODE ? books.flatMap(e2eAudioChunks) : undefined}
           onClose={() => setShowAudioManager(false)}
+          onNotice={setNotice}
+        />
+      )}
+
+      {showSystemStatus && (
+        <SystemStatus
+          user={user}
+          activeMac={activeMac}
+          canInspectLocalMac={canAdd}
+          onClose={() => setShowSystemStatus(false)}
           onNotice={setNotice}
         />
       )}

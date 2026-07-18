@@ -23,10 +23,18 @@ class FakeRunner:
 
     def run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
+        if "-progress" in command:
+            microseconds = int(self.duration * 1_000_000)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                f"out_time_us={microseconds}\nprogress=end\n",
+                "",
+            )
         if command[0] == "ffmpeg":
             Path(command[-1]).write_bytes(b"private normalized voice")
             return subprocess.CompletedProcess(command, 0, "", "")
-        return subprocess.CompletedProcess(command, 0, f"{self.duration}\n", "")
+        raise AssertionError(f"unexpected command: {command}")
 
 
 def test_voice_is_normalized_versioned_and_requires_preview_before_confirmation(tmp_path: Path) -> None:

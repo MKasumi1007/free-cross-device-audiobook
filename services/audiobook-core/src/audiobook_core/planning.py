@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from enum import IntEnum, StrEnum
 
 from .errors import BookParseError
-from .models import ParsedBook, TextSegment, assert_publication_allowed
+from .models import ParsedBook, TextSegment
 
 
 class TaskStatus(StrEnum):
@@ -108,7 +108,6 @@ def plan_generation_batch(
     chunk_seconds: float = 600,
     chars_per_second: float = 4.2,
 ) -> GenerationBatch:
-    assert_publication_allowed(book)
     segments = _readable_segments(book)
     if start_segment_id:
         try:

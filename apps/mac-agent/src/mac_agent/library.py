@@ -39,6 +39,11 @@ class LocalLibrary:
         path = self.root / book_id / "book.json"
         return self._load(path) if path.is_file() else None
 
+    def book_ids(self) -> list[str]:
+        if not self.root.exists():
+            return []
+        return sorted(path.parent.name for path in self.root.glob("*/book.json"))
+
     def _find_by_source_hash(self, source_sha256: str) -> Path | None:
         if not self.root.exists():
             return None

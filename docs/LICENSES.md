@@ -1,6 +1,6 @@
 # License Audit
 
-Checked: 2026-07-16.
+Checked: 2026-07-18.
 
 ## Reused Local Prototype
 
@@ -21,7 +21,7 @@ Official source: <https://github.com/QwenLM/Qwen3-TTS>
 
 - `torch 2.8.0`: BSD-3-Clause according to installed package metadata.
 - `transformers 4.57.3`: Apache-2.0 according to installed package metadata.
-- FFmpeg is an external runtime; distribution configuration and enabled codecs must be audited before bundling it. v1 should call the user's Homebrew/system FFmpeg rather than redistribute a binary.
+- The installer prefers an existing system FFmpeg. If it is absent on Apple Silicon, it downloads the pinned `imageio-ffmpeg` 0.6.0 macOS arm64 wheel from PyPI, verifies both the wheel and extracted FFmpeg 7.1 executable with repository-pinned SHA-256 values, and keeps the executable plus `FFMPEG-NOTICE.txt` under the private Application Support tools directory. The executable reports a GPL-enabled build without `--enable-nonfree`; source and license links are retained in that notice. The Python wrapper is BSD-2-Clause; the extracted FFmpeg executable remains governed by its applicable FFmpeg license.
 
 ## Stage 1 Application Dependencies
 

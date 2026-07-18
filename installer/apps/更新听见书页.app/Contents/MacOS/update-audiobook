@@ -1,0 +1,14 @@
+#!/bin/bash
+set -u
+UPDATER="$HOME/Library/Application Support/听见书页/installer/update.sh"
+if [[ ! -x "$UPDATER" ]]; then
+  /usr/bin/osascript -e 'display dialog "没有找到已安装的更新组件，请重新下载并双击“听见书页安装器”。" with title "无法更新" buttons {"知道了"} with icon stop'
+  exit 1
+fi
+/usr/bin/osascript -e 'display notification "正在下载并安全更新运行环境。书架和声音不会被删除。" with title "更新听见书页"'
+if /bin/bash "$UPDATER"; then
+  /usr/bin/osascript -e 'display dialog "更新完成，后台服务已经重新启动。" with title "听见书页" buttons {"完成"} with icon note'
+else
+  /usr/bin/osascript -e 'display dialog "更新没有完成，旧运行环境仍然保留。请查看安装日志。" with title "更新失败" buttons {"知道了"} with icon stop'
+  exit 1
+fi

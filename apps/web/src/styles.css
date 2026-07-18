@@ -155,6 +155,26 @@ body::before {
 .voice-progress i { display: inline-block; width: 9px; height: 9px; margin-right: 9px; border-radius: 50%; background: #bc5a38; animation: voice-pulse 1.2s ease-in-out infinite; }
 .voice-error { color: #9c3428; }
 @keyframes voice-pulse { 50% { transform: scale(1.65); opacity: .45; } }
+.shelf-status-button { margin: -18px 0 28px; padding: 9px 16px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: rgba(255,255,255,.3); cursor: pointer; }
+
+.status-backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 22px; background: rgba(30,25,20,.62); backdrop-filter: blur(8px); }
+.status-panel { display: grid; width: min(920px, 100%); max-height: min(880px, calc(100vh - 44px)); grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid rgba(255,255,255,.5); border-radius: 22px; background: var(--paper); box-shadow: var(--shadow); }
+.status-heading { display: flex; align-items: flex-start; justify-content: space-between; padding: 28px 32px 22px; border-bottom: 1px solid var(--line); }
+.status-heading h2 { margin: 7px 0 5px; font-size: 34px; font-weight: 500; }
+.status-heading p { margin: 0; color: var(--muted); }
+.status-list { overflow-y: auto; padding: 8px 26px 18px; }
+.status-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 13px; align-items: start; padding: 16px 6px; border-bottom: 1px solid var(--line); }
+.status-mark { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 50%; color: #fff; background: #71875d; font: 700 15px/1 sans-serif; }
+.status-row--warning .status-mark { background: #b9792e; }
+.status-row--failed .status-mark { background: var(--cinnabar); }
+.status-row b { margin-right: 9px; font-size: 15px; }
+.status-row small { padding: 2px 7px; border-radius: 99px; color: var(--muted); background: #eee4d5; font-size: 10px; }
+.status-row p { overflow-wrap: anywhere; margin: 5px 0 0; color: #5f584e; font: 13px/1.55 -apple-system, BlinkMacSystemFont, sans-serif; }
+.status-row em { display: block; margin-top: 5px; color: var(--cinnabar-dark); font: normal 12px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; }
+.status-repair { align-self: center; padding: 8px 12px; white-space: nowrap; }
+.status-footer { display: flex; align-items: center; gap: 10px; padding: 16px 30px; border-top: 1px solid var(--line); background: rgba(233,223,207,.45); }
+.status-footer span { flex: 1; overflow: hidden; color: var(--muted); font: 11px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.status-footer button { padding: 10px 16px; }
 
 .audio-manager-backdrop { z-index: 60; }
 .audio-manager { position: relative; display: flex; width: min(1080px, 100%); max-height: min(860px, calc(100vh - 40px)); flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.35); border-radius: 24px; background: #f8f2e7; box-shadow: 0 30px 100px rgba(27,21,16,.35); }
@@ -231,6 +251,16 @@ body::before {
   .player-tools { grid-column: 1 / -1; overflow-x: auto; padding-top: 2px; }
   .player-tools select, .player-tool-button { flex: 0 0 auto; }
   .import-modal { padding: 28px 22px; }
+  .shelf-status-button { margin-top: -20px; }
+  .status-backdrop { padding: 0; place-items: stretch; }
+  .status-panel { width: 100%; max-height: 100vh; border: 0; border-radius: 0; }
+  .status-heading { padding: 20px 18px 15px; }
+  .status-heading h2 { font-size: 29px; }
+  .status-list { padding: 6px 12px 90px; }
+  .status-row { grid-template-columns: 30px minmax(0, 1fr); gap: 9px; padding: 13px 3px; }
+  .status-repair { grid-column: 2; justify-self: start; }
+  .status-footer { position: absolute; right: 0; bottom: 0; left: 0; padding: 11px 15px calc(11px + env(safe-area-inset-bottom)); }
+  .status-footer span { display: none; }
   .modal-actions { flex-wrap: wrap; }
   .audio-manager-backdrop { padding: 0; place-items: stretch; }
   .audio-manager { width: 100%; max-height: 100vh; min-height: 100vh; border: 0; border-radius: 0; }

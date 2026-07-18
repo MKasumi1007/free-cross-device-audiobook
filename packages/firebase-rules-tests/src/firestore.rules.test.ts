@@ -180,6 +180,29 @@ describe("multi-book scheduling", () => {
 });
 
 describe("worker permissions", () => {
+  it("lets only an actively linked worker read its owner's book metadata", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    await seed("users/owner-a/books/book-a", bookData("owner-a"));
+
+    await assertSucceeds(getDoc(doc(workerDb(), "users/owner-a/books/book-a")));
+    await assertFails(getDoc(doc(workerDb("worker-b"), "users/owner-a/books/book-a")));
+
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: Timestamp.now(),
+    });
+    await assertFails(getDoc(doc(workerDb(), "users/owner-a/books/book-a")));
+  });
+
   it("publishes text metadata only for a rights-confirmed book", async () => {
     await seed("workerLinks/worker-a", {
       worker_uid: "worker-a",

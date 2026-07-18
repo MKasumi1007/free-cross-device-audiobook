@@ -31,11 +31,11 @@ def test_five_hour_batch_is_split_near_ten_minute_boundaries(tmp_path: Path) -> 
     assert len(flattened) == len(set(flattened))
 
 
-def test_local_only_book_cannot_create_public_generation_batch(tmp_path: Path) -> None:
+def test_local_only_book_can_be_planned_for_private_generation(tmp_path: Path) -> None:
     book = make_long_book(tmp_path / "private.txt", rights_confirmed=False)
-    with pytest.raises(BookParseError) as error:
-        plan_generation_batch(book)
-    assert error.value.code == "RIGHTS_NOT_CONFIRMED"
+    batch = plan_generation_batch(book, target_seconds=60, chunk_seconds=60)
+    assert batch.book_id == book.book_id
+    assert batch.chunks
 
 
 def test_lease_token_fences_late_worker() -> None:

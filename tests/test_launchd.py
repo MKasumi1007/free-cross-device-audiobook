@@ -4,7 +4,12 @@ import plistlib
 import subprocess
 from pathlib import Path
 
-from mac_agent.launchd import LABEL, install_launch_agent, refresh_installed_runtime
+from mac_agent.launchd import (
+    LABEL,
+    install_launch_agent,
+    refresh_installed_runtime,
+    reload_launch_agent,
+)
 
 
 def test_launch_agent_is_private_bounded_and_contains_no_credentials(tmp_path: Path, monkeypatch) -> None:
@@ -19,6 +24,9 @@ def test_launch_agent_is_private_bounded_and_contains_no_credentials(tmp_path: P
     text = target.read_text(encoding="utf-8")
     assert "token" not in text.lower()
     assert "password" not in text.lower()
+    assert payload["EnvironmentVariables"]["HF_HOME"].endswith("models/huggingface")
+    assert payload["EnvironmentVariables"]["AUDIOBOOK_DATA_ROOT"].endswith("听见书页")
+    assert "tools/ffmpeg-7.1-imageio-0.6.0" in payload["EnvironmentVariables"]["PATH"]
 
 
 def test_installer_refreshes_existing_private_runtime_from_project(
@@ -42,3 +50,39 @@ def test_installer_refreshes_existing_private_runtime_from_project(
     assert refresh_installed_runtime(source) == runtime
     assert calls[0][0] == str(runtime)
     assert calls[0][-1] == str(source)
+
+
+def test_reload_waits_for_shutdown_and_retries_bootstrap(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    bootstrap_attempts = 0
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal bootstrap_attempts
+        calls.append(command)
+        if command[1] == "print":
+            return subprocess.CompletedProcess(command, 1, "", "not found")
+        if command[1] == "bootstrap":
+            bootstrap_attempts += 1
+            return subprocess.CompletedProcess(
+                command,
+                0 if bootstrap_attempts == 2 else 5,
+                "",
+                "Input/output error" if bootstrap_attempts == 1 else "",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def no_connection(*_args: object, **_kwargs: object) -> None:
+        raise OSError("closed")
+
+    monkeypatch.setattr("mac_agent.launchd.subprocess.run", run)
+    monkeypatch.setattr("mac_agent.launchd.socket.create_connection", no_connection)
+    monkeypatch.setattr("mac_agent.launchd.time.sleep", lambda _seconds: None)
+    reload_launch_agent(tmp_path / "agent.plist")
+    assert bootstrap_attempts == 2
+    assert [command[1] for command in calls] == [
+        "bootout",
+        "print",
+        "bootstrap",
+        "bootstrap",
+        "kickstart",
+    ]

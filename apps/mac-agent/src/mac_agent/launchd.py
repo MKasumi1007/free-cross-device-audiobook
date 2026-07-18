@@ -3,22 +3,28 @@ from __future__ import annotations
 import os
 import plistlib
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+from .paths import data_root as application_data_root
 
 
 LABEL = "io.github.mkasumi1007.audiobook-mac-agent"
+AGENT_PORT = 17832
 
 
 def refresh_installed_runtime(source_root: Path | None = None) -> Path | None:
-    """Update the private runtime when the installer is launched from this repository."""
-    source = (source_root or Path.cwd()).resolve()
+    """Developer-only refresh helper; production updates use the packaged installer."""
+    if source_root is None:
+        return None
+    source = source_root.resolve()
     if not (source / "pyproject.toml").is_file():
         return None
     runtime_python = (
-        Path.home()
-        / "Library/Application Support/听见书页/agent-runtime/bin/python"
+        application_data_root() / "agent-runtime/bin/python"
     )
     if not runtime_python.is_file():
         return None
@@ -42,8 +48,13 @@ def refresh_installed_runtime(source_root: Path | None = None) -> Path | None:
     return runtime_python
 
 
-def install_launch_agent(*, python_path: Path | None = None) -> Path:
-    data_root = Path.home() / "Library/Application Support/听见书页"
+def install_launch_agent(
+    *,
+    python_path: Path | None = None,
+    data_directory: Path | None = None,
+    config_source: Path | None = None,
+) -> Path:
+    data_root = data_directory or application_data_root()
     installed_runtime = data_root / "agent-runtime/bin/python"
     python = (
         python_path
@@ -54,10 +65,9 @@ def install_launch_agent(*, python_path: Path | None = None) -> Path:
     agents = Path.home() / "Library/LaunchAgents"
     agents.mkdir(parents=True, exist_ok=True)
     target = agents / f"{LABEL}.plist"
-    public_config = Path.cwd() / "config/firebase-public-config.json"
-    if public_config.is_file():
+    if config_source and config_source.is_file():
         installed_config = data_root / "firebase-public-config.json"
-        shutil.copy2(public_config, installed_config)
+        shutil.copy2(config_source, installed_config)
         installed_config.chmod(0o600)
     payload = {
         "Label": LABEL,
@@ -70,10 +80,16 @@ def install_launch_agent(*, python_path: Path | None = None) -> Path:
         "StandardErrorPath": str(logs / "agent-error.log"),
         "EnvironmentVariables": {
             "PYTHONUNBUFFERED": "1",
-            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": (
+                f"{data_root}/tools/ffmpeg-7.1-imageio-0.6.0:"
+                "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            ),
             "AUDIOBOOK_QWEN_PYTHON": str(
                 data_root / "qwen-runtime/bin/python"
             ),
+            "AUDIOBOOK_DATA_ROOT": str(data_root),
+            "AUDIOBOOK_QWEN_MODEL": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            "HF_HOME": str(data_root / "models/huggingface"),
         },
     }
     temporary = target.with_suffix(".tmp")
@@ -86,20 +102,54 @@ def install_launch_agent(*, python_path: Path | None = None) -> Path:
 
 def reload_launch_agent(path: Path) -> None:
     domain = f"gui/{os.getuid()}"
-    subprocess.run(
-        ["launchctl", "bootout", domain, str(path)],
+    unloaded = subprocess.run(
+        ["launchctl", "bootout", f"{domain}/{LABEL}"],
         capture_output=True,
         text=True,
         check=False,
     )
-    result = subprocess.run(
-        ["launchctl", "bootstrap", domain, str(path)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("Mac 后台启动项安装失败。")
+    if unloaded.returncode != 0:
+        unloaded = subprocess.run(
+            ["launchctl", "bootout", domain, str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if unloaded.returncode == 0:
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            registered = subprocess.run(
+                ["launchctl", "print", f"{domain}/{LABEL}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).returncode == 0
+            try:
+                with socket.create_connection(("127.0.0.1", AGENT_PORT), timeout=0.1):
+                    port_open = True
+            except OSError:
+                port_open = False
+            if not registered and not port_open:
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("旧版 Mac 后台未能在 12 秒内安全退出。")
+
+    result: subprocess.CompletedProcess[str] | None = None
+    for delay in (0.0, 0.5, 1.5, 3.0):
+        if delay:
+            time.sleep(delay)
+        result = subprocess.run(
+            ["launchctl", "bootstrap", domain, str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            break
+    if result is None or result.returncode != 0:
+        detail = result.stderr.strip() if result is not None else "没有返回结果"
+        raise RuntimeError(f"Mac 后台启动项安装失败：{detail}")
     subprocess.run(
         ["launchctl", "kickstart", "-k", f"{domain}/{LABEL}"],
         capture_output=True,
@@ -109,7 +159,10 @@ def reload_launch_agent(path: Path) -> None:
 
 
 def main() -> None:
-    updated_runtime = refresh_installed_runtime()
-    path = install_launch_agent(python_path=updated_runtime)
+    path = install_launch_agent()
     reload_launch_agent(path)
     print("听书工具已设置为登录后自动启动。")
+
+
+if __name__ == "__main__":
+    main()

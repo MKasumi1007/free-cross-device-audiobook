@@ -13,6 +13,7 @@ from audiobook_core.planning import plan_generation_batch
 from .book_assets import BookTextPublisher
 from .cleanup import clean_expired_generation_files
 from .generation import ChunkJob, ChunkPipeline, GenerationError, SegmentGenerator, SegmentJob
+from .error_reporting import reporter
 from .library import LocalLibrary
 from .private_assets import FirestorePrivateAssetPublisher
 from .repository_assets import GitHubAudiobookPublisher, GitHubRepositoryAssetPublisher
@@ -23,6 +24,7 @@ from .voice import VoiceProfile, VoiceRegistry
 
 
 GeneratorFactory = Callable[[VoiceProfile], SegmentGenerator]
+ACTIVE_LEASE_STATES = frozenset({"LEASED", "GENERATING", "ENCODING", "UPLOADING"})
 
 
 class RenewingFence:
@@ -47,6 +49,7 @@ class RenewingFence:
             current = self.tasks.get(self.task.owner_uid, self.task.task_id)
             if (
                 current is None
+                or current.status not in ACTIVE_LEASE_STATES
                 or current.attempt_id != job.attempt_id
                 or current.lease_token != job.lease_token
                 or current.deletion_generation != job.deletion_generation
@@ -61,15 +64,19 @@ class RenewingFence:
     def state(self, status: str) -> None:
         with self._lock:
             current = self.tasks.get(self.task.owner_uid, self.task.task_id)
-            if current is None:
-                raise GenerationError("STALE_LEASE", "生成任务已经不存在。")
+            if current is None or current.status not in ACTIVE_LEASE_STATES:
+                raise GenerationError("STALE_LEASE", "生成任务已暂停、撤销或被其他尝试接管。")
             self.task = self.tasks.transition(current, status)
 
     def _run_heartbeat(self) -> None:
         while not self._stop.wait(5 * 60):
             with self._lock:
                 current = self.tasks.get(self.task.owner_uid, self.task.task_id)
-                if current is None or current.lease_token != self.task.lease_token:
+                if (
+                    current is None
+                    or current.status not in ACTIVE_LEASE_STATES
+                    or current.lease_token != self.task.lease_token
+                ):
                     return
                 self.task = self.tasks.renew(current)
 
@@ -123,10 +130,16 @@ class MacGenerationWorker:
             try:
                 worked = self.run_once()
                 self.last_error = ""
-            except Exception:
+            except Exception as error:
                 worked = False
                 self.last_state = "ERROR"
-                self.last_error = "后台生成暂时中断，稍后会自动重试。"
+                reporter.record(
+                    "worker.run_forever",
+                    error,
+                    code=getattr(error, "code", "BACKGROUND_WORKER_FAILED"),
+                    details={"last_state": self.last_state},
+                )
+                self.last_error = "后台生成暂时中断，完整原因已写入本机日志。"
             delay = 1 if worked else self.policy.load().poll_seconds
             self._stop.wait(delay)
 
@@ -216,8 +229,18 @@ class MacGenerationWorker:
             self.last_state = "READY"
             return True
         except GenerationError as error:
+            reporter.record(
+                "worker.generate_chunk",
+                error,
+                code=error.code,
+                details={"task_id": task.task_id, "book_id": task.book_id},
+            )
             current = self.tasks.get(task.owner_uid, task.task_id)
-            if current and current.lease_token == task.lease_token:
+            if (
+                current
+                and current.status in ACTIVE_LEASE_STATES
+                and current.lease_token == task.lease_token
+            ):
                 retry_at = datetime.now(UTC) + self._retry_delay(error.code, current.attempt_id)
                 self.tasks.transition(
                     current,
@@ -286,7 +309,7 @@ class MacGenerationWorker:
         now = time.monotonic()
         if now - self._last_retention < 60 * 60:
             return
-        self.tasks.queue_expired_audio(owner_uid)
+        self.tasks.queue_expired_audio(owner_uid, self.library.book_ids())
         self._last_retention = now
 
     def _maybe_reconcile(self, owner_uid: str) -> bool:
@@ -296,7 +319,10 @@ class MacGenerationWorker:
             return False
         self._last_reconciliation = now
         try:
-            report = AudioReconciler(self.tasks, self.repository).run(owner_uid)
+            report = AudioReconciler(self.tasks, self.repository).run(
+                owner_uid,
+                self.library.book_ids(),
+            )
             self.last_state = "RECONCILED"
             self.last_error = (
                 f"发现 {len(report.missing)} 个缺失、{len(report.damaged)} 个损坏、"

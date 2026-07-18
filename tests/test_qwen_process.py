@@ -4,6 +4,9 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
+from mac_agent.generation import GenerationError
 from mac_agent.qwen_process import QwenProcessGenerator
 
 
@@ -59,3 +62,28 @@ def test_qwen_subprocess_protocol_keeps_model_inputs_out_of_command_line(tmp_pat
     assert "私密书籍正文" in request
     generator.unload()
     assert process.returncode == 0
+
+
+def test_qwen_worker_error_preserves_private_details_for_local_log(tmp_path: Path) -> None:
+    process = FakeProcess()
+    process.stdout = io.StringIO(json.dumps({
+        "status": "error",
+        "code": "MODEL_LOAD_FAILED",
+        "error_type": "RuntimeError",
+        "error": "invalid model shard",
+        "traceback": "private traceback",
+    }) + "\n")
+    generator = QwenProcessGenerator(
+        python_path=tmp_path / "python",
+        worker_script=tmp_path / "worker.py",
+        reference_audio=tmp_path / "reference.wav",
+        reference_text="private reference",
+        process_factory=lambda _command: process,
+    )
+
+    with pytest.raises(GenerationError) as captured:
+        generator.generate("private text", tmp_path / "output.wav")
+
+    assert captured.value.code == "MODEL_LOAD_FAILED"
+    assert captured.value.details["worker_error"] == "invalid model shard"
+    assert captured.value.details["worker_traceback"] == "private traceback"

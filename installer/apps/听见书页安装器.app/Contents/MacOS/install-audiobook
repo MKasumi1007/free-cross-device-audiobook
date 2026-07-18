@@ -1,0 +1,23 @@
+#!/bin/bash
+set -u
+
+CONTENTS="$(cd "$(dirname "$0")/.." && pwd)"
+PAYLOAD="$CONTENTS/Resources/source.tar.gz"
+TEMP_DIR=""
+if [[ -f "$PAYLOAD" ]]; then
+  TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/audiobook-installer.XXXXXX")"
+  trap '/bin/rm -rf "$TEMP_DIR"' EXIT
+  /usr/bin/tar -xzf "$PAYLOAD" -C "$TEMP_DIR"
+  SOURCE_ROOT="$(find "$TEMP_DIR" -maxdepth 1 -type d -name 'free-cross-device-audiobook*' -print -quit)"
+else
+  SOURCE_ROOT="$(cd "$(dirname "$0")/../../../../.." && pwd)"
+fi
+
+/usr/bin/osascript -e 'display notification "正在准备 Agent、Qwen 模型和自动启动服务。首次安装可能需要较长时间。" with title "听见书页安装器"'
+if /bin/bash "$SOURCE_ROOT/installer/install.sh" --source-root "$SOURCE_ROOT"; then
+  /usr/bin/osascript -e 'display dialog "安装成功。后台服务已经启动，以后登录 Mac 会自动运行。" with title "听见书页" buttons {"打开听见书页"} default button 1 with icon note'
+  /usr/bin/open "https://mkasumi1007.github.io/free-cross-device-audiobook/"
+else
+  /usr/bin/osascript -e 'display dialog "安装没有完成。请打开网页的“系统状态”，或查看“~/Library/Application Support/听见书页/logs”中的安装日志。" with title "听见书页安装失败" buttons {"知道了"} default button 1 with icon stop'
+  exit 1
+fi

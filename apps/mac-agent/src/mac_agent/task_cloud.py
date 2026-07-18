@@ -168,6 +168,7 @@ class FirestoreWorkerTasks:
     def queue_expired_audio(
         self,
         owner_uid: str,
+        book_ids: list[str],
         *,
         now: datetime | None = None,
         limit: int = 25,
@@ -178,7 +179,7 @@ class FirestoreWorkerTasks:
         now = now or datetime.now(UTC)
         cutoff = now - self.AUDIO_RETENTION - self.RETENTION_CLOCK_SAFETY
         candidates: list[tuple[datetime, dict[str, Any], dict[str, Any]]] = []
-        for document in self._query_audio_documents(owner_uid):
+        for document in self._query_audio_documents(owner_uid, book_ids):
             values = self._fields(document)
             completed_at = values.get("completed_at")
             if (
@@ -390,6 +391,7 @@ class FirestoreWorkerTasks:
         current = self.get(owner, job.task_id)
         if (
             current is None
+            or current.status not in {"LEASED", "GENERATING", "ENCODING", "UPLOADING"}
             or current.attempt_id != job.attempt_id
             or current.lease_token != job.lease_token
             or current.deletion_generation != job.deletion_generation
@@ -601,9 +603,13 @@ class FirestoreWorkerTasks:
             id_token=identity.id_token,
         )
 
-    def audio_inventory(self, owner_uid: str) -> list[RemoteAudioRecord]:
+    def audio_inventory(
+        self,
+        owner_uid: str,
+        book_ids: list[str],
+    ) -> list[RemoteAudioRecord]:
         records: list[RemoteAudioRecord] = []
-        for document in self._query_audio_documents(owner_uid):
+        for document in self._query_audio_documents(owner_uid, book_ids):
             fields = self._fields(document)
             records.append(RemoteAudioRecord(
                 owner_uid=owner_uid,
@@ -694,22 +700,31 @@ class FirestoreWorkerTasks:
             id_token=identity.id_token,
         )
 
-    def _query_audio_documents(self, owner_uid: str) -> list[dict[str, Any]]:
+    def _query_audio_documents(
+        self,
+        owner_uid: str,
+        book_ids: list[str],
+    ) -> list[dict[str, Any]]:
         identity = self.client.authenticate()
-        owner_path = f"users/{quote(owner_uid, safe='')}"
-        payload = {
-            "structuredQuery": {
-                "from": [{"collectionId": "audioChunks", "allDescendants": True}],
+        rows: list[Any] = []
+        for book_id in sorted(set(book_ids)):
+            if not book_id or "/" in book_id:
+                continue
+            book_path = (
+                f"users/{quote(owner_uid, safe='')}/books/{quote(book_id, safe='')}"
+            )
+            payload = {
+                "structuredQuery": {"from": [{"collectionId": "audioChunks"}]}
             }
-        }
-        _, value = self.client._json_request(
-            "读取远程音频清单",
-            "POST",
-            f"{self._document_url(owner_path)}:runQuery",
-            payload=payload,
-            id_token=identity.id_token,
-        )
-        rows = value if isinstance(value, list) else []
+            _, value = self.client._json_request(
+                "读取指定书籍的远程音频清单",
+                "POST",
+                f"{self._document_url(book_path)}:runQuery",
+                payload=payload,
+                id_token=identity.id_token,
+            )
+            if isinstance(value, list):
+                rows.extend(value)
         return [
             row["document"]
             for row in rows

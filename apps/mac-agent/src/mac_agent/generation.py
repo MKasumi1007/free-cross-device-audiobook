@@ -11,11 +11,12 @@ from typing import Protocol
 
 from audiobook_core.models import PublicationMode
 
+from .error_reporting import AgentOperationError, completed_process_details, reporter
+from .media import duration_from_ffmpeg_progress, ffmpeg_duration_command
 
-class GenerationError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
+
+class GenerationError(AgentOperationError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -111,56 +112,67 @@ class FfmpegMediaEncoder:
             encoding="utf-8",
         )
         try:
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    str(concat_file),
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "64k",
-                    "-movflags",
-                    "+faststart",
-                    str(destination),
-                ],
+            try:
+                result = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-f",
+                        "concat",
+                        "-safe",
+                        "0",
+                        "-i",
+                        str(concat_file),
+                        "-c:a",
+                        "aac",
+                        "-b:a",
+                        "64k",
+                        "-movflags",
+                        "+faststart",
+                        str(destination),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except FileNotFoundError as error:
+                raise GenerationError(
+                    "FFMPEG_MISSING",
+                    "没有找到 FFmpeg，请在系统状态中运行自动修复。",
+                    details={"destination": str(destination)},
+                ) from error
+        finally:
+            concat_file.unlink(missing_ok=True)
+        if result.returncode != 0 or not destination.is_file():
+            raise GenerationError(
+                "FFMPEG_ENCODING_FAILED",
+                "M4A 编码失败，已保留逐段检查点。",
+                details=completed_process_details(result),
+            )
+        try:
+            probe = subprocess.run(
+                ffmpeg_duration_command(destination),
                 capture_output=True,
                 text=True,
                 check=False,
             )
-        finally:
-            concat_file.unlink(missing_ok=True)
-        if result.returncode != 0 or not destination.is_file():
-            raise GenerationError("AUDIO_ENCODING_FAILED", "M4A 编码失败，已保留逐段检查点。")
-        probe = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(destination),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        except FileNotFoundError as error:
+            raise GenerationError(
+                "FFMPEG_MISSING",
+                "没有找到 FFmpeg，无法校验生成音频。",
+                details={"destination": str(destination)},
+            ) from error
         try:
-            duration = float(probe.stdout.strip())
-        except ValueError as error:
-            raise GenerationError("AUDIO_VALIDATION_FAILED", "无法验证生成音频的时长。") from error
-        if duration <= 0:
-            raise GenerationError("AUDIO_VALIDATION_FAILED", "生成音频没有有效时长。")
+            duration = duration_from_ffmpeg_progress(probe)
+        except (TypeError, ValueError) as error:
+            raise GenerationError(
+                "AUDIO_VALIDATION_FAILED",
+                "无法验证生成音频的时长。",
+                details=completed_process_details(probe),
+            ) from error
         return duration
 
     @staticmethod
@@ -254,9 +266,22 @@ class ChunkPipeline:
                     uploaded.append(timeline_asset)
                 self._validate_published_asset(timeline_asset)
                 self.fence.assert_current(job)
-            except Exception:
+            except Exception as publish_error:
                 for asset in uploaded:
-                    self.publisher.delete(job.book_id, asset.asset_id)
+                    try:
+                        self.publisher.delete(job.book_id, asset.asset_id)
+                    except Exception as rollback_error:
+                        reporter.record(
+                            "generation.rollback_publish",
+                            rollback_error,
+                            code=getattr(rollback_error, "code", "PUBLISH_ROLLBACK_FAILED"),
+                            details={
+                                "book_id": job.book_id,
+                                "task_id": job.task_id,
+                                "asset_id": asset.asset_id,
+                                "original_error": repr(publish_error),
+                            },
+                        )
                 raise
 
             published = PublishedChunk(

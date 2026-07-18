@@ -41,10 +41,12 @@ class FakePairing:
 
 class FakeVoiceRunner:
     def run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        if "-progress" in command:
+            return subprocess.CompletedProcess(command, 0, "out_time_us=15000000\nprogress=end\n", "")
         if command[0] == "ffmpeg":
             Path(command[-1]).write_bytes(b"normalized private voice")
             return subprocess.CompletedProcess(command, 0, "", "")
-        return subprocess.CompletedProcess(command, 0, "15.0\n", "")
+        raise AssertionError(f"unexpected command: {command}")
 
 
 class FakePreviews:
@@ -60,6 +62,28 @@ class FakePreviews:
 
     def unload(self) -> None:
         return None
+
+
+class FakeDiagnostics:
+    def __init__(self) -> None:
+        self.repairs: list[str] = []
+
+    def report(self, **_kwargs: object) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "checked_at": "2026-07-18T00:00:00+00:00",
+            "agent_version": "0.2.0",
+            "agent_port": 17832,
+            "data_root": "/private/application-support",
+            "log_path": "/private/application-support/logs/diagnostics.jsonl",
+            "worker": {"state": "IDLE", "error": "", "model_loaded": False},
+            "recent_error": None,
+            "items": [],
+        }
+
+    def start_repair(self, action: str) -> dict[str, str]:
+        self.repairs.append(action)
+        return {"status": "started", "action": action, "message": "started"}
 
 
 ORIGIN = "http://127.0.0.1:5173"
@@ -79,7 +103,9 @@ def issue_token(client: TestClient) -> str:
 def test_rejects_missing_and_cross_site_origins(tmp_path: Path) -> None:
     client = make_client(tmp_path, FakePicker(None))
     assert client.get("/v1/health").status_code == 403
-    assert client.get("/v1/health", headers={"Origin": "https://evil.example"}).status_code == 403
+    rejected = client.get("/v1/health", headers={"Origin": "https://evil.example"})
+    assert rejected.status_code == 403
+    assert rejected.json()["code"] == "ORIGIN_MISMATCH"
 
 
 def test_preflight_is_explicit_and_private_network_compatible(tmp_path: Path) -> None:
@@ -208,3 +234,28 @@ def test_voice_setup_uses_native_picker_and_never_exposes_private_fields(tmp_pat
     )
     assert preview.status_code == 202
     assert previews.starts == 1
+
+
+def test_diagnostics_reports_runtime_and_repair_requires_one_time_csrf(tmp_path: Path) -> None:
+    diagnostics = FakeDiagnostics()
+    library = LocalLibrary(tmp_path / "library", FakePicker(None))
+    client = TestClient(create_app(library=library, diagnostics=diagnostics))  # type: ignore[arg-type]
+
+    report = client.get("/v1/diagnostics", headers={"Origin": ORIGIN})
+    assert report.status_code == 200
+    assert report.json()["agent_version"] == "0.2.0"
+    assert "token" not in report.text.lower()
+
+    headers = {"Origin": ORIGIN, "X-Audiobook-CSRF": issue_token(client)}
+    repaired = client.post(
+        "/v1/diagnostics/repair",
+        headers=headers,
+        json={"action": "model"},
+    )
+    assert repaired.status_code == 202
+    assert diagnostics.repairs == ["model"]
+    assert client.post(
+        "/v1/diagnostics/repair",
+        headers=headers,
+        json={"action": "model"},
+    ).status_code == 403

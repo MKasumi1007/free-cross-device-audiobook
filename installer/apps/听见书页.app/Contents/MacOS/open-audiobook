@@ -1,0 +1,2 @@
+#!/bin/bash
+exec /usr/bin/open "https://mkasumi1007.github.io/free-cross-device-audiobook/"

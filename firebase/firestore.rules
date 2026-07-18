@@ -186,7 +186,7 @@ service cloud.firestore {
       }
 
       match /books/{bookId} {
-        allow read: if isOwner(ownerUid);
+        allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
         allow create: if isOwner(ownerUid)
           && requestKeepsOwner(ownerUid)
           && request.resource.data.book_id == bookId;

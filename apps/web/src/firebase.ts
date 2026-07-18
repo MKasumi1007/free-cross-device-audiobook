@@ -6,6 +6,8 @@ import {
 } from "firebase/auth";
 import {
   connectFirestoreEmulator,
+  doc,
+  getDoc,
   getFirestore,
   initializeFirestore,
   persistentLocalCache,
@@ -61,4 +63,10 @@ export function getFirebaseServices(): FirebaseServices | null {
   }
   services = { app, auth, db };
   return services;
+}
+
+export async function checkFirestoreConnection(ownerUid: string): Promise<void> {
+  const current = getFirebaseServices();
+  if (!current) throw new Error("FIREBASE_CONFIG_MISSING");
+  await getDoc(doc(current.db, `users/${ownerUid}`));
 }

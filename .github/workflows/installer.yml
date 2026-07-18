@@ -1,0 +1,25 @@
+name: Build Mac installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build double-click installer
+        run: bash installer/build-installer.sh
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiobook-mac-installer
+          path: |
+            dist/installer/*.zip
+            dist/installer/*.sha256

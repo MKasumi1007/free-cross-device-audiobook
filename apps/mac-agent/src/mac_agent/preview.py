@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .generation import SingleTaskLock
+from .error_reporting import AgentOperationError, completed_process_details, reporter
+from .paths import logs_root, qwen_python
 from .qwen_process import QwenProcessGenerator
 from .voice import VoiceError, VoiceProfile, VoiceRegistry
 
@@ -103,10 +105,16 @@ class VoicePreviewService:
             with self._lock:
                 self._state = "READY"
                 self._error = ""
-        except Exception:
+        except Exception as error:
+            reporter.record("voice.preview", error, code=getattr(error, "code", "VOICE_PREVIEW_FAILED"))
             with self._lock:
                 self._state = "FAILED"
-                self._error = "试听没有生成完成，可以稍后重试。"
+                self._error = (
+                    error.user_message
+                    if isinstance(error, AgentOperationError)
+                    else str(error) if isinstance(error, VoiceError)
+                    else "试听没有生成完成，完整原因已写入本机日志。"
+                )
         finally:
             self.unload()
             wav.unlink(missing_ok=True)
@@ -121,9 +129,10 @@ class VoicePreviewService:
         generator = self.generator_factory(profile)
         self._generator = generator
         generator.generate(PREVIEW_TEXT, wav)
-        encoded = subprocess.run(
-            [
-                "ffmpeg",
+        try:
+            encoded = subprocess.run(
+                [
+                    "ffmpeg",
                 "-hide_banner",
                 "-loglevel",
                 "error",
@@ -137,29 +146,30 @@ class VoicePreviewService:
                 "-movflags",
                 "+faststart",
                 str(m4a),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as error:
+            raise VoiceError("FFMPEG_MISSING", "没有找到 FFmpeg，请在系统状态中运行自动修复。") from error
         if encoded.returncode != 0 or not m4a.is_file():
-            raise VoiceError("PREVIEW_ENCODING_FAILED", "试听编码失败，请稍后重试。")
+            raise AgentOperationError(
+                "FFMPEG_ENCODING_FAILED",
+                "试听编码失败，完整原因已写入本机日志。",
+                details=completed_process_details(encoded),
+            )
         self.registry.record_preview(m4a)
 
 
 def default_qwen_factory(profile: VoiceProfile) -> QwenProcessGenerator:
-    configured = os.environ.get("AUDIOBOOK_QWEN_PYTHON")
-    candidates = [
-        Path(configured).expanduser() if configured else None,
-        Path.home()
-        / "Documents/Codex/2026-07-16/g-i/work/tts-audiobook-tool/venv-qwen3tts/bin/python",
-    ]
-    python_path = next((path for path in candidates if path and path.is_file()), None)
-    if python_path is None:
+    python_path = qwen_python()
+    if not python_path.is_file():
         raise VoiceError("QWEN_ENV_MISSING", "本机声音模型环境尚未准备好。")
     return QwenProcessGenerator(
         python_path=python_path,
         worker_script=Path(__file__).with_name("qwen_worker.py"),
         reference_audio=Path(profile.audio_path),
         reference_text=profile.transcript,
+        stderr_path=logs_root() / "qwen-stderr.log",
     )

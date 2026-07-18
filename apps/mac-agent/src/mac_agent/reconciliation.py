@@ -42,8 +42,8 @@ class AudioReconciler:
         self.audio = GitHubReleasePublisher(repository)
         self.data = GitHubRepositoryAssetPublisher(repository)
 
-    def run(self, owner_uid: str) -> ReconciliationReport:
-        records = self.tasks.audio_inventory(owner_uid)
+    def run(self, owner_uid: str, book_ids: list[str]) -> ReconciliationReport:
+        records = self.tasks.audio_inventory(owner_uid, book_ids)
         report = self.compare(records)
         self.tasks.record_reconciliation(
             owner_uid,

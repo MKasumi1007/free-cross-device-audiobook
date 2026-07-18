@@ -9,11 +9,12 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
 
+from .error_reporting import AgentOperationError, completed_process_details
+from .media import duration_from_ffmpeg_progress, ffmpeg_duration_command
 
-class VoiceError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
+
+class VoiceError(AgentOperationError):
+    pass
 
 
 class VoicePicker(Protocol):
@@ -107,15 +108,45 @@ class VoiceRegistry:
             "pcm_s16le",
             str(temporary),
         ]
-        result = self.runner.run(command)
+        try:
+            result = self.runner.run(command)
+        except FileNotFoundError as error:
+            raise VoiceError(
+                "FFMPEG_MISSING",
+                "没有找到 FFmpeg，请在系统状态中运行自动修复。",
+                details={"source": str(source)},
+            ) from error
         if result.returncode != 0 or not temporary.exists():
             temporary.unlink(missing_ok=True)
-            raise VoiceError("VOICE_NORMALIZE_FAILED", "声音文件无法处理，请换一个清晰录音。")
+            message = (result.stderr or "").lower()
+            code = "VOICE_FORMAT_UNSUPPORTED" if any(
+                marker in message for marker in ("invalid data", "unknown format", "unsupported")
+            ) else "VOICE_NORMALIZE_FAILED"
+            raise VoiceError(
+                code,
+                "录音格式不受支持，请改用 M4A、WAV、MP3 或 FLAC。"
+                if code == "VOICE_FORMAT_UNSUPPORTED"
+                else "声音文件无法处理，请换一个清晰录音。",
+                details=completed_process_details(result),
+            )
 
         duration = self._duration(temporary)
         if not self.MIN_DURATION_SECONDS <= duration <= self.MAX_DURATION_SECONDS:
             temporary.unlink(missing_ok=True)
             raise VoiceError("VOICE_DURATION_INVALID", "声音录音需要在 10 到 30 秒之间。")
+        spoken_characters = len("".join(transcript.split()))
+        characters_per_second = spoken_characters / duration
+        if spoken_characters < 5 or characters_per_second < 0.35 or characters_per_second > 12:
+            temporary.unlink(missing_ok=True)
+            raise VoiceError(
+                "VOICE_TRANSCRIPT_MISMATCH",
+                "参考文字长度与录音时长明显不匹配，请填写录音里实际说出的全部文字。",
+                details={
+                    "duration_seconds": duration,
+                    "transcript_characters": spoken_characters,
+                    "characters_per_second": characters_per_second,
+                },
+            )
 
         audio_hash = self._hash_file(temporary)
         version_hash = sha256(f"{audio_hash}\0{transcript}".encode()).hexdigest()
@@ -178,20 +209,23 @@ class VoiceRegistry:
         return profile
 
     def _duration(self, path: Path) -> float:
-        result = self.runner.run([
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ])
+        command = ffmpeg_duration_command(path)
         try:
-            return float(result.stdout.strip())
+            result = self.runner.run(command)
+        except FileNotFoundError as error:
+            raise VoiceError(
+                "FFMPEG_MISSING",
+                "没有找到 FFmpeg，无法检查录音时长。",
+                details={"path": str(path)},
+            ) from error
+        try:
+            return duration_from_ffmpeg_progress(result)
         except (TypeError, ValueError) as error:
-            raise VoiceError("VOICE_DURATION_UNKNOWN", "无法读取声音录音长度。") from error
+            raise VoiceError(
+                "VOICE_DURATION_UNKNOWN",
+                "无法读取声音录音长度。",
+                details=completed_process_details(result),
+            ) from error
 
     @staticmethod
     def _hash_file(path: Path) -> str:

@@ -5,10 +5,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from audiobook_core.models import PublicationMode
 from audiobook_core.parser import parse_book
 from mac_agent.firebase_rest import FirebasePublicConfig, FirebaseRestClient, Identity
-from mac_agent.generation import ChunkJob, PublishedAsset, PublishedChunk, SegmentJob
+from mac_agent.generation import ChunkJob, GenerationError, PublishedAsset, PublishedChunk, SegmentJob
 from mac_agent.task_cloud import FirestoreWorkerTasks
 
 
@@ -429,6 +431,7 @@ def test_worker_queues_only_audio_older_than_five_days() -> None:
 
     queued = FirestoreWorkerTasks(make_client(transport)).queue_expired_audio(
         "owner-a",
+        ["book-a"],
         now=now,
     )
 
@@ -462,6 +465,42 @@ def test_retention_scan_does_not_queue_recent_audio() -> None:
 
     assert FirestoreWorkerTasks(make_client(transport)).queue_expired_audio(
         "owner-a",
+        ["book-a"],
         now=now,
     ) == 0
     assert len(transport.requests) == 1
+
+
+def test_failed_task_status_fences_a_still_running_local_generator() -> None:
+    deadline = datetime.now(UTC) + timedelta(minutes=10)
+    transport = FakeTransport([
+        (200, document("workerLinks/worker-a", {"owner_uid": "owner-a", "revoked_at": None})),
+        (200, document("users/owner-a/generationRequests/task-a", {
+            "task_id": "task-a",
+            "book_id": "book-a",
+            "status": "FAILED_RETRYABLE",
+            "attempt_id": 2,
+            "deletion_generation": 0,
+            "lease_owner": "worker-a",
+            "lease_token": "still-matching-token",
+            "lease_deadline": deadline,
+        })),
+    ])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+    job = ChunkJob(
+        "task-a",
+        "book-a",
+        "chunk-a",
+        "chapter-a",
+        publication_mode=PublicationMode.LOCAL_ONLY,
+        voice_version="voice-a",
+        attempt_id=2,
+        lease_token="still-matching-token",
+        deletion_generation=0,
+        segments=(SegmentJob("segment-a", "chapter-a", 0, "测试", "a" * 64),),
+    )
+
+    with pytest.raises(GenerationError) as captured:
+        tasks.assert_current(job)
+
+    assert getattr(captured.value, "code", "") == "STALE_LEASE"

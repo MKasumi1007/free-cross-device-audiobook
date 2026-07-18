@@ -1,0 +1,17 @@
+FFmpeg fallback notice
+
+If no system ffmpeg is available, the installer downloads the pinned
+imageio-ffmpeg 0.6.0 Apple Silicon wheel from files.pythonhosted.org, verifies
+both the wheel and extracted executable with repository-pinned SHA-256 values,
+and installs only ffmpeg 7.1 under the user's private Application Support folder.
+
+The imageio-ffmpeg Python wrapper is BSD-2-Clause. The extracted FFmpeg
+executable reports a GPL-enabled build and is governed by the applicable FFmpeg
+license. It does not report --enable-nonfree.
+
+Sources and license texts:
+https://github.com/imageio/imageio-ffmpeg/tree/v0.6.0
+https://github.com/imageio/imageio-binaries/blob/master/ffmpeg/ffmpeg-macos-aarch64-v7.1
+https://github.com/FFmpeg/FFmpeg/tree/n7.1
+https://github.com/FFmpeg/FFmpeg/blob/n7.1/LICENSE.md
+https://github.com/FFmpeg/FFmpeg/blob/n7.1/COPYING.GPLv3

@@ -9,7 +9,10 @@ from pydantic import BaseModel, ConfigDict
 
 from audiobook_core.errors import BookParseError
 
+from .diagnostics import SystemDiagnostics
+from .error_reporting import reporter
 from .library import LocalLibrary
+from .paths import AGENT_PORT, APP_VERSION, data_root
 from .pairing import FirebasePairingProvider, PairingProvider
 from .picker import NativeBookPicker, NativeVoicePicker
 from .preview import VoicePreviewService, default_qwen_factory
@@ -40,6 +43,12 @@ class VoiceConfirmRequest(BaseModel):
     voice_version: str
 
 
+class RepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str
+
+
 def create_app(
     *,
     library: LocalLibrary | None = None,
@@ -49,15 +58,18 @@ def create_app(
     voices: VoiceRegistry | None = None,
     previews: VoicePreviewService | None = None,
     worker_model_loaded: Callable[[], bool] | None = None,
+    worker: object | None = None,
+    diagnostics: SystemDiagnostics | None = None,
 ) -> FastAPI:
     app = FastAPI(title="听书工具 Mac Agent", docs_url=None, redoc_url=None, openapi_url=None)
     token_store = tokens or CsrfTokenStore()
-    data_root = Path.home() / "Library/Application Support/听见书页"
-    local_library = library or LocalLibrary(data_root / "books", NativeBookPicker())
+    root = data_root()
+    local_library = library or LocalLibrary(root / "books", NativeBookPicker())
     pairing_provider = pairing or FirebasePairingProvider.from_default_config()
-    voice_registry = voices or VoiceRegistry(data_root / "voices", NativeVoicePicker())
+    voice_registry = voices or VoiceRegistry(root / "voices", NativeVoicePicker())
     preview_service = previews or VoicePreviewService(voice_registry, default_qwen_factory)
     generation_model_loaded = worker_model_loaded or (lambda: False)
+    system_diagnostics = diagnostics or SystemDiagnostics()
 
     def consume_csrf(request: Request) -> bool:
         origin = request.headers["origin"]
@@ -71,11 +83,28 @@ def create_app(
     ) -> Response:
         origin = request.headers.get("origin", "")
         if origin not in allowed_origins:
-            return JSONResponse(status_code=403, content={"error": "不允许的网站来源。"})
+            return JSONResponse(
+                status_code=403,
+                content={"code": "ORIGIN_MISMATCH", "error": "不允许的网站来源。"},
+            )
         if request.method == "OPTIONS":
             response: Response = Response(status_code=204)
         else:
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception as error:
+                reporter.record(
+                    f"http.{request.method.lower()} {request.url.path}",
+                    error,
+                    code=getattr(error, "code", "AGENT_REQUEST_FAILED"),
+                )
+                response = JSONResponse(
+                    status_code=500,
+                    content={
+                        "code": "AGENT_REQUEST_FAILED",
+                        "error": "Mac Agent 操作失败，完整原因已写入本机日志。",
+                    },
+                )
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
@@ -85,14 +114,50 @@ def create_app(
         return response
 
     @app.get("/v1/health")
-    async def health() -> dict[str, str]:
+    async def health() -> dict[str, str | int]:
         preview_status = preview_service.status()
         return {
             "status": "ok",
             "service": "mac-agent",
+            "version": APP_VERSION,
+            "port": AGENT_PORT,
             "tts": "loaded" if preview_status["model_loaded"] or generation_model_loaded() else "not-loaded",
             "cloud": "configured" if pairing_provider.configured else "local-only",
         }
+
+    @app.get("/v1/diagnostics")
+    async def diagnostics_report() -> Response:
+        paired: bool | None = None
+        if pairing_provider.configured:
+            try:
+                paired = pairing_provider.is_linked()
+            except Exception as error:
+                reporter.record(
+                    "diagnostics.pairing",
+                    error,
+                    code=getattr(error, "code", "FIREBASE_PAIRING_CHECK_FAILED"),
+                )
+        return JSONResponse(content=system_diagnostics.report(
+            cloud_configured=pairing_provider.configured,
+            paired=paired,
+            worker=worker,
+        ))
+
+    @app.post("/v1/diagnostics/repair")
+    async def repair_diagnostics(payload: RepairRequest, request: Request) -> Response:
+        if not consume_csrf(request):
+            return JSONResponse(
+                status_code=403,
+                content={"code": "CSRF_EXPIRED", "error": "操作凭证已过期，请重新点击。"},
+            )
+        try:
+            return JSONResponse(status_code=202, content=system_diagnostics.start_repair(payload.action))
+        except (FileNotFoundError, ValueError) as error:
+            reporter.record("diagnostics.repair", error, code="AUTO_REPAIR_UNAVAILABLE")
+            return JSONResponse(
+                status_code=422,
+                content={"code": "AUTO_REPAIR_UNAVAILABLE", "error": str(error)},
+            )
 
     @app.get("/v1/session")
     async def session(request: Request) -> dict[str, str | int]:
