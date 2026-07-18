@@ -158,6 +158,8 @@ class MacGenerationWorker:
             return self._process_deletion(deletion)
         task = self.tasks.next_task(owner_uid)
         if task is None:
+            if self._sync_private_book_texts(owner_uid):
+                return True
             return self._maybe_reconcile(owner_uid)
         profile = self.voices.load()
         if profile is None or not profile.confirmed:
@@ -204,7 +206,7 @@ class MacGenerationWorker:
         fence = RenewingFence(self.tasks, task)
         fence.start()
         try:
-            self._ensure_book_text(fence.task, book)
+            self._ensure_book_text(fence.task.owner_uid, fence.task.task_id, book)
             job = self._make_job(book, task, profile)
             generator = self._generator_for(profile)
             publisher = (
@@ -358,15 +360,28 @@ class MacGenerationWorker:
             self._voice_version = profile.voice_version
         return self._generator
 
-    def _ensure_book_text(self, task: CloudTask, book: ParsedBook) -> None:
+    def _sync_private_book_texts(self, owner_uid: str) -> bool:
+        for book_id in self.library.book_ids():
+            if book_id in self._published_books:
+                continue
+            book = self.library.get(book_id)
+            if book is None or book.publication_mode is not PublicationMode.LOCAL_ONLY:
+                self._published_books.add(book_id)
+                continue
+            self._ensure_book_text(owner_uid, "library-sync", book)
+            self.last_state = "BOOK_TEXT_SYNCED"
+            return True
+        return False
+
+    def _ensure_book_text(self, owner_uid: str, task_id: str, book: ParsedBook) -> None:
         if book.book_id in self._published_books:
             return
-        existing = self.tasks.book_text_asset(task.owner_uid, book.book_id)
+        existing = self.tasks.book_text_asset(owner_uid, book.book_id)
         if book.publication_mode is PublicationMode.LOCAL_ONLY:
             private_publisher = FirestorePrivateAssetPublisher(
                 self.tasks.client,
-                task.owner_uid,
-                task_id=task.task_id,
+                owner_uid,
+                task_id=task_id,
             )
             asset = BookTextPublisher(
                 self.work_root / "books",
@@ -374,7 +389,7 @@ class MacGenerationWorker:
                 allow_local_only=True,
             ).publish(book)
             if existing is None or existing.sha256 != asset.sha256:
-                self.tasks.record_book_text(task.owner_uid, book, asset)
+                self.tasks.record_book_text(owner_uid, book, asset)
                 if existing and existing.private_key != asset.private_key:
                     private_publisher.delete_private(
                         existing.private_key,
@@ -386,7 +401,7 @@ class MacGenerationWorker:
                 self.work_root / "books",
                 public_publisher,
             ).publish(book)
-            self.tasks.record_book_text(task.owner_uid, book, asset)
+            self.tasks.record_book_text(owner_uid, book, asset)
         self._published_books.add(book.book_id)
 
     @staticmethod
