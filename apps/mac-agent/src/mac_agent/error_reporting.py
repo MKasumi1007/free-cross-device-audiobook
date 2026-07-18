@@ -59,25 +59,29 @@ class LocalErrorReporter:
             "details": private_details,
             "runtime": self._runtime_snapshot(),
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
-        with self._lock:
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(line)
-            self.path.chmod(0o600)
-            public = {
-                "timestamp": payload["timestamp"],
-                "operation": operation,
-                "error_code": resolved_code,
-                "message": self._public_message(error),
-            }
-            temporary = self.latest_path.with_suffix(".tmp")
-            temporary.write_text(
-                json.dumps(public, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            temporary.chmod(0o600)
-            os.replace(temporary, self.latest_path)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with self._lock:
+                with self.path.open("a", encoding="utf-8") as handle:
+                    handle.write(line)
+                self.path.chmod(0o600)
+                public = {
+                    "timestamp": payload["timestamp"],
+                    "operation": operation,
+                    "error_code": resolved_code,
+                    "message": self._public_message(error),
+                }
+                temporary = self.latest_path.with_suffix(".tmp")
+                temporary.write_text(
+                    json.dumps(public, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                temporary.chmod(0o600)
+                os.replace(temporary, self.latest_path)
+        except OSError:
+            # Diagnostics are best effort and must never replace the original failure.
+            pass
         return payload
 
     def latest_public(self) -> dict[str, str] | None:

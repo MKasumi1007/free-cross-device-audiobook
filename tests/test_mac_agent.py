@@ -239,7 +239,9 @@ def test_voice_setup_uses_native_picker_and_never_exposes_private_fields(tmp_pat
 def test_diagnostics_reports_runtime_and_repair_requires_one_time_csrf(tmp_path: Path) -> None:
     diagnostics = FakeDiagnostics()
     library = LocalLibrary(tmp_path / "library", FakePicker(None))
-    client = TestClient(create_app(library=library, diagnostics=diagnostics))  # type: ignore[arg-type]
+    client = TestClient(
+        create_app(library=library, diagnostics=diagnostics, pairing=FakePairing())
+    )  # type: ignore[arg-type]
 
     report = client.get("/v1/diagnostics", headers={"Origin": ORIGIN})
     assert report.status_code == 200
