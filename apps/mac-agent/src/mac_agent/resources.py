@@ -49,22 +49,28 @@ class ResourcePolicy:
 
     @staticmethod
     def _on_ac_power() -> bool:
-        result = subprocess.run(
-            ["pmset", "-g", "batt"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["pmset", "-g", "batt"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return True
         return "AC Power" in result.stdout
 
     @staticmethod
     def available_memory_bytes() -> int | None:
-        result = subprocess.run(
-            ["vm_stat"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["vm_stat"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return None
         if result.returncode != 0:
             return None
         page_size = 4096

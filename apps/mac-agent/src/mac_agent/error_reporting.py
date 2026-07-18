@@ -57,7 +57,7 @@ class LocalErrorReporter:
             "exception_repr": repr(error),
             "traceback": "".join(traceback.format_exception(error)),
             "details": private_details,
-            "runtime": self._runtime_snapshot(),
+            "runtime": self._safe_runtime_snapshot(),
         }
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
         try:
@@ -116,6 +116,16 @@ class LocalErrorReporter:
             "available_memory_bytes": policy.available_memory_bytes(),
             "disk_free_bytes": shutil.disk_usage(root.parent if root.exists() else Path.home()).free,
         }
+
+    @classmethod
+    def _safe_runtime_snapshot(cls) -> dict[str, Any]:
+        try:
+            return cls._runtime_snapshot()
+        except Exception as error:
+            return {
+                "snapshot_error": type(error).__name__,
+                "snapshot_message": str(error)[:240],
+            }
 
 
 def completed_process_details(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
