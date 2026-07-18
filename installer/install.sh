@@ -244,7 +244,7 @@ if [[ "$ACTION" == "full" || "$ACTION" == "runtime" ]]; then
   chmod 600 "$DATA_ROOT/firebase-public-config.json"
 fi
 
-for item in install.sh update.sh uninstall.sh repair.sh model_self_test.py requirements-agent.lock requirements-qwen.lock; do
+for item in install.sh update.sh update-agent-when-idle.sh uninstall.sh repair.sh model_self_test.py requirements-agent.lock requirements-qwen.lock; do
   SOURCE_ITEM="$RESOURCE_DIR/$item"
   TARGET_ITEM="$DATA_ROOT/installer/$item"
   if [[ "$SOURCE_ITEM" != "$TARGET_ITEM" ]]; then /bin/cp "$SOURCE_ITEM" "$TARGET_ITEM"; fi

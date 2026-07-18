@@ -19,10 +19,10 @@
 | 1 可复现环境 | 两套 uv 锁；托管 Python 3.12；正式模型目录；MPS 自检 | 真实模型加载；真实中文 WAV；真实 AAC M4A；依赖导入诊断 | 已完成真实 Mac 验收 | 无 |
 | 2 正式安装器 | 双击 app；安装/更新/修复/卸载；LaunchAgent；回滚；FFmpeg fallback | 首次完整安装、覆盖更新、PID 重启、登录项、删源码重启；卸载保留自动化 | 已完成真实 Mac 验收；下载后 Gatekeeper 需右键打开一次 | 仅首次 Gatekeeper 确认 |
 | 3 语音链路 | Qwen stdout 协议隔离；分层错误；长文本分片；私密规划 | 真实已确认声音生成 3.68 秒 WAV/M4A；152 字两调用合并为 33.44 秒 WAV；真实后台 chunk 完成 | 本地生成、编码和私密云端发布已真实验证 | 若要更换声音，需用户提供/选择真实录音 |
-| 4 Web/Agent | Blob 试听加载；Origin 错误码；系统状态与自动修复 | Web 单元测试、真实 loopback health/diagnostics | 已编码并完成部分真实 Mac 验收 | 无 |
-| 5 Firebase | 按书查询；Worker 书籍元数据最小读权限；私密分片/哈希/删除 | 25 个 Rules Emulator 测试；Rules 真实部署；真实音频 1 分片、时间线 1 分片、SHA-256 与 READY 元数据 | 权限修复与私密 M4A 上传已真实验证；所有者网页回读/删除待验收 | Google 登录若过期需用户操作 |
-| 6 真实验收 | 正式 Agent 接管现有任务，真实 Qwen → FFmpeg → Firestore | 15.44 秒、135064 字节 AAC M4A 成为 `PRIVATE_FIRESTORE/READY`；Mac 更新后任务安全重试 | Mac 到私密云端闭环已完成；网页播放、删除/重生成和真机仍未完成 | Google 登录、真实 iPhone，必要时麦克风/文件授权 |
-| 7 发布与文档 | README、用户/排障/维护/审计文档；0.2.0 workflow | 发布前全套测试、Actions、Pages 待最终记录 | 进行中 | 无 |
+| 4 Web/Agent | Blob 试听加载；Origin 错误码；移动登录；系统状态与自动修复 | Web 单元测试；真实 loopback health/diagnostics；真实 iPhone 登录 | Web 与 Agent 主要链路已验收 | 无 |
+| 5 Firebase | 按书查询；Worker 最小读权限；私密分片/哈希/删除；私密正文空闲刷新 | 25 个 Rules Emulator 测试；Rules 真实部署；真实音频与正文由 owner iPhone 回读 | 私密上传、权限和所有者回读已真实验证；删除待验收 | Google 登录若过期需用户操作 |
+| 6 真实验收 | 正式 Agent 接管任务；Qwen → FFmpeg → Firestore；iPhone 播放与恢复 | 真实私密 M4A READY；iPhone 用户声音、段落高亮、后台、锁屏控制、位置恢复 | Mac 到 iPhone 私密播放闭环已完成；删除/重生成和中断场景仍未完成 | 来电/耳机、网络切换、PWA 安装需真机操作 |
+| 7 发布与文档 | README、用户/排障/维护/审计/真机报告；CI 与 Pages | `ba379ed` CI/Pages 成功；后续文档提交再次执行流水线 | 发布完成并持续更新 | 无 |
 
 ## 已完成的真实 Mac 证据
 
@@ -39,18 +39,29 @@
 
 真实测试音频、声音、书籍、token、日志和本机路径均未加入 Git。
 
+## 已完成的真实 iPhone 证据
+
+- iPhone Safari 正常打开 GitHub Pages，书架、阅读器和底部播放器适配移动屏幕。
+- 未登录时“登录同步”按钮可见；Google 登录成功后显示头像与账号书架。
+- owner-only 私密书籍正文和 READY 音频可回读，用户确认播放为自己的声音。
+- 播放时正文当前段落高亮；暂停和恢复正常。
+- 锁屏显示书名、作者、封面与进度，锁屏播放、暂停和跳转按钮正常。
+- Safari 进入后台后继续播放，返回 Safari 后状态正常。
+- 离开后返回可恢复保存位置；因 5 秒自动保存允许少量回退。
+- 截图发现的 `Section0001` 标题和“首段无音频但本章后段可播”问题已修复并部署；后者仍需刷新网页后的真机复验。
+
 ## 自动化证据
 
 2026-07-18 发布候选代码的最终记录：
 
 ```text
 免费能力审计：通过
-秘密扫描：278 个文本文件，通过
+秘密扫描：通过
 TypeScript typecheck：通过
-Web 单元测试：20/20
+Web 单元测试：22/22
 Firestore Rules Emulator：25/25
-Python：81/81（另有 1 个上游弃用警告）
-Playwright desktop/mobile：10/10，包括真实 GitHub Release 文本、时间线与远程音频播放
+Python：87/87（另有 1 个上游弃用警告）
+Playwright desktop/mobile：8 个通过，2 个在可选公开 Release 资产不存在时跳过
 Vite/PWA 生产构建：通过
 Ruff：通过；mypy strict：37 个源文件通过
 Shell 语法、git diff --check：通过
@@ -62,10 +73,9 @@ Shell 语法、git diff --check：通过
 ## 尚未完成，不能宣称已验证
 
 - 真实新用户从 GitHub Release 下载后完整走过 Gatekeeper 与首次安装。
-- 用户在当前版本网页上重新完成 Google 登录、配对、真实 TXT/EPUB 的 GUI 导入。
-- 当前版本网页以所有者账号回读并实际播放上述 READY 私密音频。
 - 真实删除后从保留 cursor 重新生成。
-- 真实 iPhone Safari/PWA 播放、锁屏、来电/耳机中断、跨设备续听。
+- iPhone 刷新最新 Pages 后复验章节首个可播放段修复。
+- 真实 iPhone 添加主屏幕 PWA、倍速、定时、书签、来电/耳机中断和网络切换。
 - Mac 物理重启；当前只完成 LaunchAgent bootout/bootstrap/kickstart 和源码移除后的进程重启。
 
 这些项目没有被 Pixel 尺寸模拟、mock audio 或单元测试替代。

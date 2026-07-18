@@ -12,12 +12,13 @@
 | 双击安装、独立 Agent/Qwen 环境、模型、LaunchAgent | 已在真实 Apple Silicon Mac 安装和重载验证 |
 | Qwen 模型加载、中文 WAV、FFmpeg M4A | 已在真实 Mac、MPS 和真实已确认声音上验证 |
 | 私密 Firestore Rules | 25 个 Emulator 测试通过；必要修复已真实部署 |
-| GitHub Pages 与 Google 登录/配对 | 已存在真实部署和配对；本版本仍需发布后复验 |
+| GitHub Pages 与 Google 登录/配对 | 真实 iPhone 登录、头像和账号书架同步通过 |
 | 私密音频生成与 Firestore 上传 | 一个真实 Qwen chunk 已编码、分片、哈希校验并写为 READY |
-| 所有者网页回读、删除/重生成闭环 | 仍需网页登录后完成，不能标记为完成 |
-| 真实 iPhone Safari、锁屏和跨设备续听 | 尚未完成，需要用户真机操作 |
+| 所有者网页回读与播放 | 真实 iPhone 已回读私密正文与音频，并确认用户声音 |
+| 真实 iPhone Safari、锁屏和续听 | 播放、后台、锁屏控制与位置恢复通过；中断/网络切换待测 |
+| 删除/重生成闭环 | 仍需完成真实用户流程，不能标记为完成 |
 
-完整证据、失败项和未完成项见 [验收矩阵](docs/ACCEPTANCE.md)；修复前审计见 [真实审计报告](docs/AUDIT_REPORT.md)。
+完整证据、失败项和未完成项见 [验收矩阵](docs/ACCEPTANCE.md)；本轮开发与真机过程见 [2026-07-18 实测报告](docs/2026-07-18_本轮开发与iPhone实测报告.md)；修复前审计见 [真实审计报告](docs/AUDIT_REPORT.md)。
 
 ## 普通用户安装
 

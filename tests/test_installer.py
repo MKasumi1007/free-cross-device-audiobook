@@ -12,6 +12,7 @@ def test_installer_scripts_are_valid_and_double_click_apps_are_executable() -> N
     scripts = [
         ROOT / "installer/install.sh",
         ROOT / "installer/update.sh",
+        ROOT / "installer/update-agent-when-idle.sh",
         ROOT / "installer/uninstall.sh",
         ROOT / "installer/repair.sh",
         ROOT / "installer/build-installer.sh",
@@ -21,6 +22,48 @@ def test_installer_scripts_are_valid_and_double_click_apps_are_executable() -> N
     executables = list((ROOT / "installer/apps").glob("*.app/Contents/MacOS/*"))
     assert len(executables) == 4
     assert all(os.access(path, os.X_OK) for path in executables)
+
+
+def test_idle_updater_waits_for_checkpoint_and_runs_runtime_repair(tmp_path: Path) -> None:
+    source = tmp_path / "project"
+    installer = source / "installer"
+    installer.mkdir(parents=True)
+    (source / "pyproject.toml").write_text("[project]\nname='test'\n", encoding="utf-8")
+    fake_install = installer / "install.sh"
+    fake_install.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$*" > "$AUDIOBOOK_DATA_ROOT/update-call.txt"\n',
+        encoding="utf-8",
+    )
+    fake_install.chmod(0o700)
+    data_root = tmp_path / "data"
+    environment = {
+        **os.environ,
+        "AUDIOBOOK_DATA_ROOT": str(data_root),
+        "AUDIOBOOK_IDLE_UPDATE_POLL_SECONDS": "0",
+        "AUDIOBOOK_IDLE_UPDATE_SETTLE_SECONDS": "0",
+    }
+
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(ROOT / "installer/update-agent-when-idle.sh"),
+            "--source-root",
+            str(source),
+            "--marker",
+            "test-update.done",
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (data_root / "state/test-update.done").is_file()
+    call = (data_root / "update-call.txt").read_text(encoding="utf-8")
+    assert f"--repair runtime --source-root {source} --skip-model-test" in call
+    script = (ROOT / "installer/update-agent-when-idle.sh").read_text(encoding="utf-8")
+    assert "/Users/" not in script
 
 
 def test_installer_has_pinned_verified_arm64_ffmpeg_fallback() -> None:
