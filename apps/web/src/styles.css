@@ -71,6 +71,7 @@ body::before {
 .shelf-intro h1 { position: relative; margin: 0; font-size: clamp(38px, 6vw, 72px); font-weight: 500; letter-spacing: -.03em; }
 .shelf-intro > p:last-child { position: relative; max-width: 600px; margin: 18px 0 0; color: var(--muted); font-size: 16px; }
 .mobile-add-hint { display: inline-block; margin: -18px 0 28px; padding: 10px 14px; border-radius: 8px; color: var(--cinnabar-dark); background: rgba(164,59,43,.08); }
+.mobile-generation-hint { display: none; }
 .shelf-audio-button { float: right; margin: -15px 0 24px; padding: 10px 15px; border: 1px solid var(--line); border-radius: 999px; color: var(--cinnabar-dark); background: rgba(255,255,255,.38); cursor: pointer; }
 .book-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(206px, 1fr)); gap: clamp(18px, 3vw, 34px); }
 .book-card { position: relative; display: flex; min-height: 300px; flex-direction: column; align-items: flex-start; overflow: hidden; padding: 30px 24px 22px 34px; border: 0; border-radius: 7px 15px 15px 7px; background: #d3b98d; box-shadow: 5px 10px 0 rgba(67,48,31,.08), 0 24px 42px rgba(70,48,29,.16); text-align: left; cursor: pointer; transition: transform .32s ease, box-shadow .32s ease; }
@@ -199,8 +200,9 @@ body::before {
   .app-shell { padding-bottom: 126px; }
   .topbar { height: 68px; padding: 0 17px; }
   .brand-seal { width: 36px; height: 36px; }
-  .brand small, .sync-state, .add-book-button, .header-button { display: none !important; }
+  .brand small, .sync-state, .add-book-button, .header-button:not(.mobile-login-button) { display: none !important; }
   .topbar-actions { gap: 9px; }
+  .mobile-login-button { display: inline-flex; padding: 8px 12px; color: var(--cinnabar-dark); background: rgba(255,255,255,.34); font-size: 12px; white-space: nowrap; }
   .shelf-page { width: min(100% - 28px, 620px); padding: 48px 0 50px; }
   .shelf-intro { margin-bottom: 36px; padding: 0; }
   .shelf-intro::before { display: none; }
@@ -214,6 +216,7 @@ body::before {
   .toc-panel { position: relative; top: 0; height: auto; padding: 28px 18px 18px; border-right: 0; border-bottom: 1px solid var(--line); }
   .toc-panel .eyebrow, .book-byline, .rights-badge { display: none; }
   .toc-panel h1 { font-size: 25px; }
+  .mobile-generation-hint { display: block; margin: 12px 0 20px; padding: 10px 12px; border-radius: 10px; color: var(--cinnabar-dark); background: rgba(164,59,43,.08); font-size: 12px; line-height: 1.55; }
   .back-link { margin-bottom: 18px; }
   .toc-list { display: flex; margin-top: 18px; overflow-x: auto; }
   .toc-list button { min-width: 180px; background: rgba(255,255,255,.3); }

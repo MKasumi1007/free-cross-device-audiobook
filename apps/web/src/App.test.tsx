@@ -119,6 +119,18 @@ describe("书架响应式入口", () => {
     expect(await screen.findByRole("button", { name: "登录同步" })).toBeInTheDocument();
   });
 
+  it("手机端保留登录入口并隐藏本机生成操作", async () => {
+    setPlatform(390, "iPhone", 5);
+    testState.firebaseConfigured = true;
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "登录同步" })).toHaveClass(
+      "mobile-login-button",
+    );
+    expect(screen.queryByRole("button", { name: /生成约 5 小时音频/ })).not.toBeInTheDocument();
+    expect(screen.getByText("请在 Mac 上生成音频，已生成的内容可以直接播放。")).toBeInTheDocument();
+  });
+
   it("已配对时显示连接状态，并可确认撤销 Mac 权限", async () => {
     testState.firebaseConfigured = true;
     testState.user = { uid: "owner-a", photoURL: null };

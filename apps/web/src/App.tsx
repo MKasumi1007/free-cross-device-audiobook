@@ -690,7 +690,7 @@ export function App() {
         </button>
         <div className="topbar-actions">
           <span className={`sync-state ${user && !cloudSyncPaused ? "is-online" : ""}`}><i /> {cloudSyncPaused ? "免费额度保护中" : user ? "云同步已开启" : "本机书架"}</span>
-          {firebaseConfigured && !user && <button className="quiet-button header-button" onClick={() => void logIn()}>登录同步</button>}
+          {firebaseConfigured && !user && <button className="quiet-button header-button mobile-login-button" onClick={() => void logIn()}>登录同步</button>}
           {user && canAdd && !activeMac && <button className="quiet-button header-button" onClick={() => void connectMacAutomatically()}>连接这台 Mac</button>}
           {user && canAdd && activeMac && <button className="quiet-button header-button is-connected" onClick={() => setShowDisconnectMac(true)}>Mac 已连接</button>}
           {canAdd && <button className="quiet-button header-button" onClick={() => setShowVoice(true)}>{voiceStatus?.confirmed ? "声音已设置" : "我的声音"}</button>}
@@ -759,13 +759,17 @@ export function App() {
             <div className="rights-badge">
               {selectedBook.publication_mode === "LOCAL_ONLY" ? "仅你的登录账号可访问" : "已确认可公开"}
             </div>
-            <button
-              className="generate-audio-button"
-              onClick={() => void generateFiveHours()}
-              disabled={busy || !user || !activeMac}
-            >
-              {selectedBook.publication_mode === "LOCAL_ONLY" ? "私密生成约 5 小时音频" : "生成约 5 小时音频"}
-            </button>
+            {canAdd ? (
+              <button
+                className="generate-audio-button"
+                onClick={() => void generateFiveHours()}
+                disabled={busy || !user || !activeMac}
+              >
+                {selectedBook.publication_mode === "LOCAL_ONLY" ? "私密生成约 5 小时音频" : "生成约 5 小时音频"}
+              </button>
+            ) : (
+              <p className="mobile-generation-hint">请在 Mac 上生成音频，已生成的内容可以直接播放。</p>
+            )}
             {(user || E2E_PLAYER_MODE) && (
               <button className="manage-audio-button" onClick={() => setShowAudioManager(true)}>
                 管理已生成音频
