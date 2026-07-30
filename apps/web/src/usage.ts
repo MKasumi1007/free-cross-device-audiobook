@@ -1,10 +1,12 @@
 const KEY = "audiobook-firestore-usage-estimate";
 const PAUSE_KEY = "audiobook-firestore-sync-pause";
+const PAUSE_SCHEMA_VERSION = 2;
 
-// These are deliberately below Firebase's published Spark limits. The counter is
-// only a local estimate, so stopping early is safer than risking a paid dependency.
+// Browser write/delete estimates are close enough to be useful safety rails.
+// Listener snapshots are not: after the initial snapshot, Firestore bills document
+// changes rather than every document present in the callback snapshot. Read totals
+// remain informational and the Firebase Spark hard limit remains the real guard.
 const SAFETY_LIMITS = {
-  reads: 45_000,
   writes: 18_000,
   deletes: 18_000,
 } as const;
@@ -19,6 +21,7 @@ export interface DailyUsageEstimate {
 export interface CloudSyncPause {
   date: string;
   reason: "ESTIMATED_LIMIT" | "REMOTE_QUOTA";
+  schema_version: typeof PAUSE_SCHEMA_VERSION;
 }
 
 function today(): string {
@@ -45,8 +48,7 @@ export function recordEstimatedUsage(delta: Partial<Omit<DailyUsageEstimate, "da
   };
   localStorage.setItem(KEY, JSON.stringify(next));
   if (
-    next.reads >= SAFETY_LIMITS.reads
-    || next.writes >= SAFETY_LIMITS.writes
+    next.writes >= SAFETY_LIMITS.writes
     || next.deletes >= SAFETY_LIMITS.deletes
   ) {
     pauseCloudSync("ESTIMATED_LIMIT");
@@ -55,7 +57,11 @@ export function recordEstimatedUsage(delta: Partial<Omit<DailyUsageEstimate, "da
 }
 
 export function pauseCloudSync(reason: CloudSyncPause["reason"]): void {
-  localStorage.setItem(PAUSE_KEY, JSON.stringify({ date: today(), reason } satisfies CloudSyncPause));
+  localStorage.setItem(PAUSE_KEY, JSON.stringify({
+    date: today(),
+    reason,
+    schema_version: PAUSE_SCHEMA_VERSION,
+  } satisfies CloudSyncPause));
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event("audiobook-cloud-sync-paused"));
   }
@@ -64,7 +70,12 @@ export function pauseCloudSync(reason: CloudSyncPause["reason"]): void {
 export function getCloudSyncPause(): CloudSyncPause | null {
   try {
     const stored = JSON.parse(localStorage.getItem(PAUSE_KEY) || "null") as CloudSyncPause | null;
-    if (stored?.date === today()) return stored;
+    if (
+      stored?.date === today()
+      && stored.schema_version === PAUSE_SCHEMA_VERSION
+    ) {
+      return stored;
+    }
   } catch {
     // A damaged pause marker can be safely discarded.
   }

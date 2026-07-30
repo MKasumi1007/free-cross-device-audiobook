@@ -1,4 +1,4 @@
-import { pauseCloudSync } from "./usage";
+import { cloudSyncPauseMessage, pauseCloudSync } from "./usage";
 
 export type SyncErrorKind = "FREE_QUOTA" | "OFFLINE" | "AUTH" | "UNKNOWN";
 
@@ -9,6 +9,9 @@ export interface SyncError {
 
 export function classifyFirebaseError(error: unknown): SyncError {
   const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+  if (code.includes("resource-exhausted-local-safety-pause")) {
+    return { kind: "FREE_QUOTA", message: cloudSyncPauseMessage() };
+  }
   if (code.includes("resource-exhausted") || code.includes("quota-exceeded")) {
     pauseCloudSync("REMOTE_QUOTA");
     return { kind: "FREE_QUOTA", message: "今日免费同步额度已暂停，本机内容仍可继续使用，明天会自动恢复。" };
