@@ -3,17 +3,17 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from audiobook_core.errors import BookParseError
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
-
-from audiobook_core.errors import BookParseError
+from starlette.concurrency import run_in_threadpool
 
 from .diagnostics import SystemDiagnostics
 from .error_reporting import reporter
 from .library import LocalLibrary
-from .paths import AGENT_PORT, APP_VERSION, data_root
 from .pairing import FirebasePairingProvider, PairingProvider
+from .paths import AGENT_PORT, APP_VERSION, data_root
 from .picker import NativeBookPicker, NativeVoicePicker
 from .preview import VoicePreviewService, default_qwen_factory
 from .security import DEFAULT_ALLOWED_ORIGINS, CsrfTokenStore
@@ -92,7 +92,7 @@ def create_app(
         else:
             try:
                 response = await call_next(request)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001
                 reporter.record(
                     f"http.{request.method.lower()} {request.url.path}",
                     error,
@@ -127,21 +127,24 @@ def create_app(
 
     @app.get("/v1/diagnostics")
     async def diagnostics_report() -> Response:
-        paired: bool | None = None
-        if pairing_provider.configured:
-            try:
-                paired = pairing_provider.is_linked()
-            except Exception as error:
-                reporter.record(
-                    "diagnostics.pairing",
-                    error,
-                    code=getattr(error, "code", "FIREBASE_PAIRING_CHECK_FAILED"),
-                )
-        return JSONResponse(content=system_diagnostics.report(
-            cloud_configured=pairing_provider.configured,
-            paired=paired,
-            worker=worker,
-        ))
+        def collect() -> dict[str, object]:
+            paired: bool | None = None
+            if pairing_provider.configured:
+                try:
+                    paired = pairing_provider.is_linked()
+                except Exception as error:  # noqa: BLE001
+                    reporter.record(
+                        "diagnostics.pairing",
+                        error,
+                        code=getattr(error, "code", "FIREBASE_PAIRING_CHECK_FAILED"),
+                    )
+            return system_diagnostics.report(
+                cloud_configured=pairing_provider.configured,
+                paired=paired,
+                worker=worker,
+            )
+
+        return JSONResponse(content=await run_in_threadpool(collect))
 
     @app.post("/v1/diagnostics/repair")
     async def repair_diagnostics(payload: RepairRequest, request: Request) -> Response:

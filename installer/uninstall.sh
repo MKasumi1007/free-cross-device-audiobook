@@ -2,12 +2,16 @@
 set -Eeuo pipefail
 
 LABEL="io.github.mkasumi1007.audiobook-mac-agent"
+WATCHDOG_LABEL="io.github.mkasumi1007.audiobook-mac-agent-watchdog"
 DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$HOME/Library/Application Support/听见书页}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+WATCHDOG_PLIST="$HOME/Library/LaunchAgents/$WATCHDOG_LABEL.plist"
 DOMAIN="gui/$(id -u)"
 
 launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl bootout "$DOMAIN" "$WATCHDOG_PLIST" >/dev/null 2>&1 || true
 /bin/rm -f "$PLIST"
+/bin/rm -f "$WATCHDOG_PLIST"
 
 for target in \
   "$DATA_ROOT/agent-runtime" "$DATA_ROOT/qwen-runtime" \

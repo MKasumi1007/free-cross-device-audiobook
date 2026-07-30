@@ -11,8 +11,8 @@ from pathlib import Path
 
 from .paths import data_root as application_data_root
 
-
 LABEL = "io.github.mkasumi1007.audiobook-mac-agent"
+WATCHDOG_LABEL = "io.github.mkasumi1007.audiobook-mac-agent-watchdog"
 AGENT_PORT = 17832
 
 
@@ -73,7 +73,7 @@ def install_launch_agent(
         "Label": LABEL,
         "ProgramArguments": [str(python), "-m", "mac_agent.main"],
         "RunAtLoad": True,
-        "KeepAlive": {"SuccessfulExit": False},
+        "KeepAlive": True,
         "ProcessType": "Background",
         "ThrottleInterval": 10,
         "StandardOutPath": str(logs / "agent.log"),
@@ -98,6 +98,62 @@ def install_launch_agent(
     temporary.chmod(0o600)
     os.replace(temporary, target)
     return target
+
+
+def install_watchdog(
+    *,
+    python_path: Path | None = None,
+    data_directory: Path | None = None,
+) -> Path:
+    data_root = data_directory or application_data_root()
+    installed_runtime = data_root / "agent-runtime/bin/python"
+    python = (
+        python_path
+        or (installed_runtime if installed_runtime.is_file() else Path(sys.prefix) / "bin/python")
+    ).absolute()
+    logs = data_root / "logs"
+    logs.mkdir(parents=True, exist_ok=True, mode=0o700)
+    agents = Path.home() / "Library/LaunchAgents"
+    agents.mkdir(parents=True, exist_ok=True)
+    target = agents / f"{WATCHDOG_LABEL}.plist"
+    payload = {
+        "Label": WATCHDOG_LABEL,
+        "ProgramArguments": [str(python), "-m", "mac_agent.watchdog"],
+        "StartInterval": 60,
+        "ProcessType": "Background",
+        "StandardOutPath": str(logs / "watchdog.log"),
+        "StandardErrorPath": str(logs / "watchdog-error.log"),
+        "EnvironmentVariables": {
+            "PYTHONUNBUFFERED": "1",
+            "AUDIOBOOK_DATA_ROOT": str(data_root),
+        },
+    }
+    temporary = target.with_suffix(".tmp")
+    with temporary.open("wb") as handle:
+        plistlib.dump(payload, handle, sort_keys=True)
+    temporary.chmod(0o600)
+    os.replace(temporary, target)
+    return target
+
+
+def ensure_launch_agent(path: Path, label: str) -> None:
+    domain = f"gui/{os.getuid()}"
+    registered = subprocess.run(
+        ["launchctl", "print", f"{domain}/{label}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if registered.returncode == 0:
+        return
+    result = subprocess.run(
+        ["launchctl", "bootstrap", domain, str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Mac 后台守护启动失败：{result.stderr.strip() or '没有返回原因'}")
 
 
 def reload_launch_agent(path: Path) -> None:
@@ -160,6 +216,8 @@ def reload_launch_agent(path: Path) -> None:
 
 def main() -> None:
     path = install_launch_agent()
+    watchdog = install_watchdog()
+    ensure_launch_agent(watchdog, WATCHDOG_LABEL)
     reload_launch_agent(path)
     print("听书工具已设置为登录后自动启动。")
 

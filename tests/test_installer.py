@@ -4,7 +4,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -97,6 +96,14 @@ def test_uninstaller_removes_service_but_preserves_books_voices_and_models(tmp_p
         "HOME": str(tmp_path),
         "AUDIOBOOK_DATA_ROOT": str(data_root),
     }
+    launch_agents = tmp_path / "Library/LaunchAgents"
+    launch_agents.mkdir(parents=True)
+    (launch_agents / "io.github.mkasumi1007.audiobook-mac-agent.plist").write_text(
+        "main",
+        encoding="utf-8",
+    )
+    watchdog = launch_agents / "io.github.mkasumi1007.audiobook-mac-agent-watchdog.plist"
+    watchdog.write_text("watchdog", encoding="utf-8")
     result = subprocess.run(
         ["/bin/bash", str(ROOT / "installer/uninstall.sh")],
         env=environment,
@@ -110,3 +117,4 @@ def test_uninstaller_removes_service_but_preserves_books_voices_and_models(tmp_p
     assert (data_root / "books/marker").read_text(encoding="utf-8") == "books"
     assert (data_root / "voices/marker").read_text(encoding="utf-8") == "voices"
     assert (data_root / "models/marker").read_text(encoding="utf-8") == "models"
+    assert not watchdog.exists()

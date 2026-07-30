@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from pathlib import Path
 import subprocess
+import threading
+import time
+from pathlib import Path
 
+import httpx
+from audiobook_core.parser import parse_book
 from fastapi.testclient import TestClient
-
 from mac_agent.app import create_app
 from mac_agent.library import LocalLibrary
 from mac_agent.pairing import PairingCode
 from mac_agent.voice import VoiceRegistry
-from tests.fixtures.builders import make_epub_with_placeholder_nav
 
-from audiobook_core.parser import parse_book
+from tests.fixtures.builders import make_epub_with_placeholder_nav
 
 
 class FakePicker:
@@ -261,3 +264,38 @@ def test_diagnostics_reports_runtime_and_repair_requires_one_time_csrf(tmp_path:
         headers=headers,
         json={"action": "model"},
     ).status_code == 403
+
+
+def test_slow_diagnostics_does_not_block_health(tmp_path: Path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowDiagnostics(FakeDiagnostics):
+        def report(self, **_kwargs: object) -> dict[str, object]:
+            started.set()
+            release.wait(timeout=2)
+            return {"agent_version": "0.2.0"}
+
+    app = create_app(
+        library=LocalLibrary(tmp_path / "library", FakePicker(None)),
+        diagnostics=SlowDiagnostics(),
+        pairing=FakePairing(),
+    )
+
+    async def exercise() -> float:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="https://test",
+            headers={"Origin": ORIGIN},
+        ) as client:
+            diagnostics = asyncio.create_task(client.get("/v1/diagnostics"))
+            assert await asyncio.to_thread(started.wait, 1)
+            before = time.monotonic()
+            health = await client.get("/v1/health")
+            elapsed = time.monotonic() - before
+            release.set()
+            assert (await diagnostics).status_code == 200
+            assert health.status_code == 200
+            return elapsed
+
+    assert asyncio.run(exercise()) < 0.2
