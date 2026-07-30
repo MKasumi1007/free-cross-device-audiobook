@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import wave
 from pathlib import Path
 
 import pytest
@@ -10,14 +11,32 @@ from mac_agent.generation import GenerationError
 from mac_agent.qwen_process import QwenProcessGenerator
 
 
+class RecordingInput(io.StringIO):
+    def write(self, value: str) -> int:
+        result = super().write(value)
+        try:
+            request = json.loads(value)
+        except json.JSONDecodeError:
+            return result
+        if request.get("command") == "generate":
+            output = Path(request["output"])
+            with wave.open(str(output), "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(24000)
+                writer.writeframes(b"\0\0" * 240)
+        return result
+
+
 class FakeProcess:
-    def __init__(self) -> None:
-        self.stdin = io.StringIO()
-        self.stdout = io.StringIO(json.dumps({
+    def __init__(self, responses: int = 1) -> None:
+        self.stdin = RecordingInput()
+        response = json.dumps({
             "status": "ok",
             "duration_seconds": 3.25,
             "sample_rate": 24000,
-        }) + "\n")
+        }) + "\n"
+        self.stdout = io.StringIO(response * responses)
         self.returncode: int | None = None
 
     def poll(self) -> int | None:
@@ -87,3 +106,49 @@ def test_qwen_worker_error_preserves_private_details_for_local_log(tmp_path: Pat
     assert captured.value.code == "MODEL_LOAD_FAILED"
     assert captured.value.details["worker_error"] == "invalid model shard"
     assert captured.value.details["worker_traceback"] == "private traceback"
+
+
+def test_qwen_generation_resumes_from_completed_small_pieces(tmp_path: Path) -> None:
+    output = tmp_path / "segment.wav"
+    text = "这是一个用于测试关机续做的小段检查点。" * 5
+    first_process = FakeProcess(responses=1)
+    first = QwenProcessGenerator(
+        python_path=tmp_path / "python",
+        worker_script=tmp_path / "worker.py",
+        reference_audio=tmp_path / "reference.wav",
+        reference_text="参考文字",
+        process_factory=lambda _command: first_process,
+    )
+
+    with pytest.raises(GenerationError) as captured:
+        first.generate(text, output)
+
+    assert captured.value.code == "TTS_WORKER_EXITED"
+    first_requests = [
+        json.loads(line)
+        for line in first_process.stdin.getvalue().splitlines()
+        if '"command": "generate"' in line
+    ]
+    assert len(first_requests) == 2
+    assert (output.with_suffix(".parts") / "checkpoint.json").exists()
+
+    second_process = FakeProcess(responses=20)
+    progress: list[tuple[int, int, float]] = []
+    second = QwenProcessGenerator(
+        python_path=tmp_path / "python",
+        worker_script=tmp_path / "worker.py",
+        reference_audio=tmp_path / "reference.wav",
+        reference_text="参考文字",
+        process_factory=lambda _command: second_process,
+    )
+    generated = second.generate(text, output, lambda *value: progress.append(value))
+    second_requests = [
+        json.loads(line)
+        for line in second_process.stdin.getvalue().splitlines()
+        if '"command": "generate"' in line
+    ]
+
+    assert output.exists()
+    assert generated.duration_seconds == pytest.approx(progress[-1][2])
+    assert progress[-1][0] == progress[-1][1]
+    assert len(second_requests) == progress[-1][1] - 1

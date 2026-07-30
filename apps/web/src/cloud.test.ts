@@ -102,6 +102,56 @@ describe("manual chapter generation queue", () => {
       status: "PAUSED",
     });
   });
+
+  it("combines worker checkpoints into visible chapter progress and ETA", () => {
+    const queue = buildGenerationQueue([
+      {
+        task_id: "ready",
+        book_id: "book-long",
+        chapter_id: "chapter-1",
+        status: "READY",
+        priority: 1_000,
+        chunk_order: 0,
+        estimated_seconds: 600,
+      },
+      {
+        task_id: "active",
+        book_id: "book-long",
+        chapter_id: "chapter-1",
+        status: "GENERATING",
+        priority: 999,
+        chunk_order: 1,
+        estimated_seconds: 600,
+        progress_stage: "GENERATING",
+        progress_completed_units: 2,
+        progress_total_units: 4,
+        progress_current_piece: 2,
+        progress_current_piece_total: 4,
+        progress_generated_audio_seconds: 50,
+        progress_elapsed_seconds: 100,
+        progress_eta_seconds: 50,
+      },
+      {
+        task_id: "next",
+        book_id: "book-long",
+        chapter_id: "chapter-1",
+        status: "QUEUED",
+        priority: 998,
+        chunk_order: 2,
+        estimated_seconds: 600,
+      },
+    ], [longBook()]);
+
+    expect(queue[0]).toMatchObject({
+      status: "GENERATING",
+      progress_percent: 50,
+      progress_stage: "GENERATING",
+      current_piece: 2,
+      current_piece_total: 4,
+      eta_seconds: 50,
+      chapter_eta_seconds: 1_250,
+    });
+  });
 });
 
 describe("remote audio inventory", () => {

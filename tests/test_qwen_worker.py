@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 import mac_agent.qwen_worker
-from mac_agent.qwen_worker import release_accelerator_cache, split_generation_text
+from mac_agent.qwen_worker import release_accelerator_cache
+from mac_agent.tts_text import split_generation_text
 
 
 def test_generation_text_is_split_at_natural_bounded_breaks() -> None:

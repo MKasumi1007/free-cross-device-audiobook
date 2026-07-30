@@ -23,11 +23,13 @@ class FakeGenerator:
         self.fail_on_call = fail_on_call
         self.unloads = 0
 
-    def generate(self, text: str, output_wav: Path) -> GeneratedAudio:
+    def generate(self, text: str, output_wav: Path, on_progress=None) -> GeneratedAudio:
         self.calls.append(text)
         if self.fail_on_call == len(self.calls):
             raise GenerationError("NETWORK_INTERRUPTED", "simulated")
         output_wav.write_bytes(f"wav:{text}".encode())
+        if on_progress:
+            on_progress(1, 1, 2.5)
         return GeneratedAudio(duration_seconds=2.5, sample_rate=24000)
 
     def unload(self) -> None:

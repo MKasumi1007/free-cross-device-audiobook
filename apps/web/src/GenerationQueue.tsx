@@ -1,11 +1,13 @@
 import type { ParsedBook } from "@audiobook/contracts";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   buildGenerationQueue,
   enqueueGenerationChapters,
+  loadAudioInventory,
   reorderGenerationQueue,
   updateGenerationQueueItem,
+  type AudioInventoryItem,
   type ChapterGenerationSelection,
   type GenerationQueueAction,
   type GenerationQueueItem,
@@ -45,6 +47,60 @@ function formatDuration(seconds: number): string {
   return hours ? `约 ${hours} 小时 ${minutes} 分` : `约 ${minutes} 分钟`;
 }
 
+function formatRemaining(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "正在计算";
+  if (seconds <= 20) return "即将完成";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.max(1, Math.ceil((seconds % 3600) / 60));
+  return hours ? `约 ${hours} 小时 ${minutes} 分` : `约 ${minutes} 分钟`;
+}
+
+function formatPlaybackDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return minutes ? `${minutes} 分 ${remainder} 秒` : `${remainder} 秒`;
+}
+
+function timestampMillis(value: unknown): number | null {
+  if (value instanceof Date) return value.getTime();
+  if (!value || typeof value !== "object") return null;
+  const timestamp = value as {
+    seconds?: number;
+    nanoseconds?: number;
+    toMillis?: () => number;
+  };
+  if (typeof timestamp.toMillis === "function") return timestamp.toMillis();
+  if (typeof timestamp.seconds === "number") {
+    return timestamp.seconds * 1000 + Number(timestamp.nanoseconds || 0) / 1_000_000;
+  }
+  return null;
+}
+
+function retentionLabel(completedAt: unknown): string {
+  const completed = timestampMillis(completedAt);
+  if (completed == null) return "完成后保留 5 天";
+  const remaining = completed + 5 * 24 * 60 * 60 * 1000 - Date.now();
+  if (remaining <= 0) return "等待自动删除";
+  const hours = Math.ceil(remaining / (60 * 60 * 1000));
+  const days = Math.floor(hours / 24);
+  return days ? `${days} 天 ${hours % 24} 小时后删除` : `${hours} 小时后删除`;
+}
+
+function stageLabel(stage: string, macOnline: boolean): string {
+  if (!macOnline) return "等待 Mac 开机";
+  const labels: Record<string, string> = {
+    LEASED: "正在准备",
+    PREPARING: "正在准备",
+    MODEL_LOADING: "正在加载你的声音模型",
+    GENERATING: "正在朗读并保存小段",
+    ENCODING: "朗读完成，正在合并音频",
+    UPLOADING: "正在安全保存到网页",
+    READY: "这一段已经可以听",
+    FAILED_RETRYABLE: "暂时中断，稍后从断点继续",
+  };
+  return labels[stage] || "正在准备";
+}
+
 function actionLabel(item: GenerationQueueItem): {
   action: GenerationQueueAction;
   label: string;
@@ -79,14 +135,47 @@ export function GenerationQueue({
       : new Set()
   ));
   const [busy, setBusy] = useState(false);
+  const [audioInventory, setAudioInventory] = useState<AudioInventoryItem[]>([]);
+  const [inventoryError, setInventoryError] = useState("");
   const queue = buildGenerationQueue(tasks, books);
   const activeItems = queue.filter((item) => (
     item.status !== "COMPLETED" && item.status !== "REMOVED"
   ));
   const completedItems = queue.filter((item) => item.status === "COMPLETED");
+  const generatingItem = activeItems.find((item) => item.status === "GENERATING");
+  const waitingItems = activeItems.filter((item) => item.queue_id !== generatingItem?.queue_id);
+  const historicalPausedItems = activeItems.filter((item) => item.historical_pause);
+  const readyAudio = audioInventory
+    .filter((item) => item.status === "READY")
+    .sort((left, right) => (
+      (timestampMillis(right.completed_at) || 0) - (timestampMillis(left.completed_at) || 0)
+    ));
   const selectedBook = books.find((book) => book.book_id === selectedBookId) || books[0];
   const selectedCount = selectedChapters.size;
   const pendingSeconds = activeItems.reduce((total, item) => total + item.estimated_seconds, 0);
+
+  useEffect(() => {
+    let active = true;
+    async function refreshInventory() {
+      try {
+        const next = await loadAudioInventory(ownerUid, books);
+        if (active) {
+          setAudioInventory(next);
+          setInventoryError("");
+        }
+      } catch (error) {
+        if (active) {
+          setInventoryError(error instanceof Error ? error.message : "暂时无法读取已生成音频。");
+        }
+      }
+    }
+    void refreshInventory();
+    const timer = window.setInterval(() => void refreshInventory(), 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [ownerUid, books]);
 
   function toggleChapter(bookId: string, chapterId: string) {
     const key = selectionKey(bookId, chapterId);
@@ -189,6 +278,20 @@ export function GenerationQueue({
     }
   }
 
+  async function removeHistoricalPauses() {
+    const taskIds = [...new Set(historicalPausedItems.flatMap((item) => item.task_ids))];
+    if (!taskIds.length) return;
+    setBusy(true);
+    try {
+      const changed = await updateGenerationQueueItem(ownerUid, taskIds, "REMOVE");
+      onNotice(`已整理 ${changed} 个旧暂停任务。需要时重新勾选章节即可生成。`);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "旧暂停任务没有整理成功。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop generation-queue-backdrop" role="presentation">
       <section
@@ -285,13 +388,75 @@ export function GenerationQueue({
             <p className="queue-explanation">
               约保留 5 小时可听音频；旧音频满 5 天删除后，Mac 会继续生成列表中的下一章。
             </p>
+            {historicalPausedItems.length > 0 && (
+              <div className="historical-pause-notice">
+                <span>
+                  发现 {historicalPausedItems.length} 章是旧版本误留下的暂停记录，不代表现在全部暂停。
+                </span>
+                <button disabled={busy} onClick={() => void removeHistoricalPauses()}>
+                  整理旧暂停
+                </button>
+              </div>
+            )}
+            {generatingItem && (
+              <article className="generation-now" aria-live="polite">
+                <div className="generation-now-topline">
+                  <span><i className={macOnline ? "is-online" : ""} />此刻正在处理</span>
+                  <strong>{Math.round(generatingItem.progress_percent)}%</strong>
+                </div>
+                <small>{generatingItem.book_title}</small>
+                <h4>{generatingItem.chapter_title}</h4>
+                <div
+                  className="generation-progress-track"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(generatingItem.progress_percent)}
+                >
+                  <span style={{ width: `${generatingItem.progress_percent}%` }} />
+                </div>
+                <p>{stageLabel(generatingItem.progress_stage, macOnline)}</p>
+                <dl>
+                  <div>
+                    <dt>当前小段</dt>
+                    <dd>
+                      {generatingItem.current_piece_total
+                        ? `${generatingItem.current_piece} / ${generatingItem.current_piece_total}`
+                        : "准备中"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>本段还需</dt>
+                    <dd>{formatRemaining(generatingItem.eta_seconds)}</dd>
+                  </div>
+                  <div>
+                    <dt>本章还需</dt>
+                    <dd>{formatRemaining(generatingItem.chapter_eta_seconds)}</dd>
+                  </div>
+                  <div>
+                    <dt>已生成声音</dt>
+                    <dd>{formatPlaybackDuration(generatingItem.generated_audio_seconds)}</dd>
+                  </div>
+                </dl>
+                <small className="generation-now-note">
+                  每个小段约 40 字，完成一个就保存一个；关机后会从最近的小段继续。
+                </small>
+              </article>
+            )}
+            <div className="queue-subheading">
+              <b>接下来生成</b>
+              <span>{waitingItems.length} 章</span>
+            </div>
             <div className="generation-items" aria-live="polite">
-              {!activeItems.length && (
+              {!waitingItems.length && !generatingItem && (
                 <p className="queue-empty">待生成列表是空的。请从左边选择章节。</p>
               )}
-              {activeItems.map((item, index) => {
+              {!waitingItems.length && generatingItem && (
+                <p className="queue-empty queue-empty--compact">后面暂时没有其他章节。</p>
+              )}
+              {waitingItems.map((item, index) => {
                 const action = actionLabel(item);
-                const movableItems = activeItems.filter((entry) => entry.status !== "GENERATING");
+                const movableItems = waitingItems.filter((entry) => entry.status !== "GENERATING");
                 const movableIndex = movableItems.findIndex((entry) => entry.queue_id === item.queue_id);
                 return (
                   <article className={`generation-item generation-item--${item.status.toLowerCase()}`} key={item.queue_id}>
@@ -334,18 +499,22 @@ export function GenerationQueue({
                 );
               })}
             </div>
-            {completedItems.length > 0 && (
+            {(readyAudio.length > 0 || completedItems.length > 0) && (
               <details className="completed-generation-items">
-                <summary>已完成 {completedItems.length} 章</summary>
-                {completedItems.map((item) => (
-                  <div key={item.queue_id}>
+                <summary>已经可以听 · {readyAudio.length} 段音频</summary>
+                {readyAudio.map((item) => (
+                  <div key={`${item.book_id}:${item.chunk_id}`}>
                     <span><b>{item.chapter_title}</b><small>{item.book_title}</small></span>
-                    <em>{item.total_chunks} 段可听</em>
+                    <em>
+                      {formatPlaybackDuration(Number(item.duration_seconds || 0))}
+                      <small>{retentionLabel(item.completed_at)}</small>
+                    </em>
                   </div>
                 ))}
                 <button onClick={onOpenAudioManager}>打开音频空间管理或重新生成</button>
               </details>
             )}
+            {inventoryError && <p className="queue-inventory-error">{inventoryError}</p>}
           </section>
         </div>
 

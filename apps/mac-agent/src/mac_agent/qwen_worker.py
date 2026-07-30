@@ -11,9 +11,31 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-
 PROTOCOL_STDOUT = sys.stdout
 MAX_GENERATION_CHARS = 40
+
+
+def split_generation_text(text: str, max_chars: int = MAX_GENERATION_CHARS) -> list[str]:
+    """Keep this script standalone because it runs inside the separate Qwen environment."""
+    sentences = re.findall(r"[^。！？!?；;\n]+[。！？!?；;]?", text.strip())
+    bounded: list[str] = []
+    for sentence in sentences:
+        remaining = sentence.strip()
+        while len(remaining) > max_chars:
+            window = remaining[:max_chars]
+            punctuation = max(window.rfind("，"), window.rfind(","), window.rfind("、"))
+            cut = punctuation + 1 if punctuation >= max_chars // 2 else max_chars
+            bounded.append(remaining[:cut].strip())
+            remaining = remaining[cut:].strip()
+        if remaining:
+            bounded.append(remaining)
+    combined: list[str] = []
+    for piece in bounded:
+        if combined and len(combined[-1]) + len(piece) <= max_chars:
+            combined[-1] += piece
+        else:
+            combined.append(piece)
+    return combined
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,32 +76,6 @@ def error_response(error: BaseException, phase: str) -> dict[str, Any]:
         "error": str(error),
         "traceback": "".join(traceback.format_exception(error))[-16_000:],
     }
-
-
-def split_generation_text(text: str, max_chars: int = MAX_GENERATION_CHARS) -> list[str]:
-    """Bound one model call while preserving the original segment as one WAV."""
-    if max_chars <= 0:
-        raise ValueError("max_chars must be positive")
-    sentences = re.findall(r"[^。！？!?；;\n]+[。！？!?；;]?", text.strip())
-    bounded: list[str] = []
-    for sentence in sentences:
-        remaining = sentence.strip()
-        while len(remaining) > max_chars:
-            window = remaining[:max_chars]
-            punctuation = max(window.rfind("，"), window.rfind(","), window.rfind("、"))
-            cut = punctuation + 1 if punctuation >= max_chars // 2 else max_chars
-            bounded.append(remaining[:cut].strip())
-            remaining = remaining[cut:].strip()
-        if remaining:
-            bounded.append(remaining)
-
-    combined: list[str] = []
-    for piece in bounded:
-        if combined and len(combined[-1]) + len(piece) <= max_chars:
-            combined[-1] += piece
-        else:
-            combined.append(piece)
-    return combined
 
 
 def release_accelerator_cache(torch_module: Any) -> None:

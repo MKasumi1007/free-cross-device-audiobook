@@ -34,6 +34,7 @@ class RenewingFence:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._heartbeat: threading.Thread | None = None
+        self._started_monotonic = time.monotonic()
 
     def start(self) -> None:
         self._heartbeat = threading.Thread(target=self._run_heartbeat, daemon=True)
@@ -66,7 +67,53 @@ class RenewingFence:
             current = self.tasks.get(self.task.owner_uid, self.task.task_id)
             if current is None or current.status not in ACTIVE_LEASE_STATES:
                 raise GenerationError("STALE_LEASE", "生成任务已暂停、撤销或被其他尝试接管。")
-            self.task = self.tasks.transition(current, status)
+            changes: dict[str, object] = {"progress_stage": status}
+            if status == "READY":
+                changes["progress_eta_seconds"] = 0.0
+            self.task = self.tasks.transition(current, status, **changes)
+
+    def progress(
+        self,
+        *,
+        completed_units: int,
+        total_units: int,
+        completed_segments: int,
+        total_segments: int,
+        current_segment_id: str,
+        current_segment_order: int,
+        current_piece: int,
+        current_piece_total: int,
+        generated_audio_seconds: float,
+    ) -> None:
+        with self._lock:
+            current = self.tasks.get(self.task.owner_uid, self.task.task_id)
+            if current is None or current.status not in ACTIVE_LEASE_STATES:
+                raise GenerationError("STALE_LEASE", "生成任务已暂停、撤销或被其他尝试接管。")
+            elapsed = max(0.0, time.monotonic() - self._started_monotonic)
+            remaining_units = max(0, total_units - completed_units)
+            eta = (
+                elapsed / completed_units * remaining_units
+                if completed_units > 0 and remaining_units > 0
+                else 0.0 if completed_units >= total_units and total_units > 0 else None
+            )
+            self.task = self.tasks.transition(
+                current,
+                current.status,
+                progress_stage="GENERATING",
+                progress_completed_units=completed_units,
+                progress_total_units=total_units,
+                progress_completed_segments=completed_segments,
+                progress_total_segments=total_segments,
+                progress_current_segment_id=current_segment_id,
+                progress_current_segment_order=current_segment_order,
+                progress_current_piece=current_piece,
+                progress_current_piece_total=current_piece_total,
+                progress_generated_audio_seconds=round(generated_audio_seconds, 3),
+                progress_elapsed_seconds=round(elapsed, 1),
+                progress_eta_seconds=round(eta, 1) if eta is not None else None,
+                checkpoint_segment_id=current_segment_id,
+                checkpoint_order=current_segment_order,
+            )
 
     def _run_heartbeat(self) -> None:
         while not self._stop.wait(5 * 60):
@@ -190,6 +237,7 @@ class MacGenerationWorker:
         task = self.tasks.claim(task)
         pause_reason = self.policy.pause_reason()
         if pause_reason:
+            self._unload_generator()
             self.tasks.transition(task, "PAUSED", pause_reason=pause_reason)
             self.last_state = pause_reason
             return True
@@ -216,7 +264,7 @@ class MacGenerationWorker:
             )
             self.last_state = "FAILED_RETRYABLE"
             return True
-        task = self.tasks.transition(task, "GENERATING")
+        task = self.tasks.transition(task, "GENERATING", progress_stage="MODEL_LOADING")
         fence = RenewingFence(self.tasks, task)
         fence.start()
         try:
@@ -266,12 +314,14 @@ class MacGenerationWorker:
                     error_code=error.code,
                     error_message="生成暂时中断，稍后会从检查点继续。",
                     retry_not_before=retry_at,
+                    progress_stage="FAILED_RETRYABLE",
                 )
             self.last_state = "FAILED_RETRYABLE"
             self.last_error = str(error)
             return True
         finally:
             fence.stop()
+            self._unload_generator()
 
     def _process_deletion(self, deletion: CloudDeletion) -> bool:
         claimed = self.tasks.claim_deletion(deletion)

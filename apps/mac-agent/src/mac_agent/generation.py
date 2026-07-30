@@ -7,12 +7,13 @@ import subprocess
 from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from audiobook_core.models import PublicationMode
 
 from .error_reporting import AgentOperationError, completed_process_details, reporter
 from .media import duration_from_ffmpeg_progress, ffmpeg_duration_command
+from .tts_text import split_generation_text
 
 
 class GenerationError(AgentOperationError):
@@ -72,7 +73,12 @@ class PublishedChunk:
 
 
 class SegmentGenerator(Protocol):
-    def generate(self, text: str, output_wav: Path) -> GeneratedAudio: ...
+    def generate(
+        self,
+        text: str,
+        output_wav: Path,
+        on_progress: Callable[[int, int, float], None] | None = None,
+    ) -> GeneratedAudio: ...
 
     def unload(self) -> None: ...
 
@@ -96,10 +102,49 @@ class MediaEncoder(Protocol):
 class PipelineObserver(Protocol):
     def state(self, status: str) -> None: ...
 
+    def progress(
+        self,
+        *,
+        completed_units: int,
+        total_units: int,
+        completed_segments: int,
+        total_segments: int,
+        current_segment_id: str,
+        current_segment_order: int,
+        current_piece: int,
+        current_piece_total: int,
+        generated_audio_seconds: float,
+    ) -> None: ...
+
 
 class NullPipelineObserver:
     def state(self, status: str) -> None:
         del status
+
+    def progress(
+        self,
+        *,
+        completed_units: int,
+        total_units: int,
+        completed_segments: int,
+        total_segments: int,
+        current_segment_id: str,
+        current_segment_order: int,
+        current_piece: int,
+        current_piece_total: int,
+        generated_audio_seconds: float,
+    ) -> None:
+        del (
+            completed_units,
+            total_units,
+            completed_segments,
+            total_segments,
+            current_segment_id,
+            current_segment_order,
+            current_piece,
+            current_piece_total,
+            generated_audio_seconds,
+        )
 
 
 class FfmpegMediaEncoder:
@@ -301,6 +346,16 @@ class ChunkPipeline:
         completed = {str(item["segment_id"]): item for item in checkpoint}
         elapsed = sum(float(item["duration_seconds"]) for item in checkpoint)
         timeline = list(checkpoint)
+        piece_counts = {
+            segment.segment_id: max(1, len(split_generation_text(segment.spoken_text)))
+            for segment in job.segments
+        }
+        total_units = sum(piece_counts.values())
+        completed_units = sum(
+            piece_counts.get(str(item["segment_id"]), 1)
+            for item in checkpoint
+        )
+        completed_segments = len(checkpoint)
         for segment in job.segments:
             wav = segment_dir / f"{segment.segment_id}.wav"
             existing = completed.get(segment.segment_id)
@@ -308,7 +363,30 @@ class ChunkPipeline:
                 continue
             self.fence.assert_current(job)
             temporary = wav.with_suffix(".tmp.wav")
-            generated = self.generator.generate(segment.spoken_text, temporary)
+            segment_piece_total = piece_counts[segment.segment_id]
+
+            def report_piece(
+                piece: int,
+                piece_total: int,
+                segment_audio_seconds: float,
+            ) -> None:
+                self.observer.progress(
+                    completed_units=completed_units + piece,
+                    total_units=total_units,
+                    completed_segments=completed_segments,
+                    total_segments=len(job.segments),
+                    current_segment_id=segment.segment_id,
+                    current_segment_order=segment.order,
+                    current_piece=piece,
+                    current_piece_total=piece_total,
+                    generated_audio_seconds=elapsed + segment_audio_seconds,
+                )
+
+            generated = self.generator.generate(
+                segment.spoken_text,
+                temporary,
+                report_piece,
+            )
             if generated.duration_seconds <= 0 or not temporary.is_file():
                 temporary.unlink(missing_ok=True)
                 raise GenerationError("TTS_EMPTY_OUTPUT", "语音模型没有生成有效音频。")
@@ -329,6 +407,22 @@ class ChunkPipeline:
             timeline.sort(key=lambda value: int(value["segment_order"]))
             elapsed = sum(float(value["duration_seconds"]) for value in timeline)
             self._write_json_atomic(work / "checkpoint.json", self._checkpoint_payload(job, timeline))
+            completed_units += segment_piece_total
+            completed_segments += 1
+            self.observer.progress(
+                completed_units=completed_units,
+                total_units=total_units,
+                completed_segments=completed_segments,
+                total_segments=len(job.segments),
+                current_segment_id=segment.segment_id,
+                current_segment_order=segment.order,
+                current_piece=segment_piece_total,
+                current_piece_total=segment_piece_total,
+                generated_audio_seconds=elapsed,
+            )
+            discard_checkpoint = getattr(self.generator, "discard_checkpoint", None)
+            if callable(discard_checkpoint):
+                discard_checkpoint(temporary)
         return timeline
 
     def _load_checkpoint(self, work: Path, job: ChunkJob) -> list[dict[str, str | int | float]]:

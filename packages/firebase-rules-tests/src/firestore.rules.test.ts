@@ -340,7 +340,7 @@ describe("worker permissions", () => {
     await assertFails(getDoc(doc(workerDb(), partPath)));
   });
 
-  it("allows task lease fields but blocks progress and unrelated task fields", async () => {
+  it("allows validated worker telemetry but blocks forged progress and unrelated fields", async () => {
     await seed("workerLinks/worker-a", {
       worker_uid: "worker-a",
       owner_uid: "owner-a",
@@ -361,6 +361,42 @@ describe("worker permissions", () => {
       lease_token: "a-secure-lease-token-with-24-chars",
       lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
       pause_reason: null,
+      progress_stage: "PREPARING",
+      progress_completed_units: 0,
+      progress_total_units: 0,
+      progress_completed_segments: 0,
+      progress_total_segments: 0,
+      progress_current_segment_id: null,
+      progress_current_segment_order: 0,
+      progress_current_piece: 0,
+      progress_current_piece_total: 0,
+      progress_generated_audio_seconds: 0,
+      progress_elapsed_seconds: 0,
+      progress_eta_seconds: null,
+      progress_started_at: Timestamp.now(),
+      updated_at: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(task, {
+      status: "GENERATING",
+      progress_stage: "GENERATING",
+      progress_completed_units: 2,
+      progress_total_units: 10,
+      progress_completed_segments: 1,
+      progress_total_segments: 4,
+      progress_current_segment_id: "segment-a",
+      progress_current_segment_order: 1,
+      progress_current_piece: 1,
+      progress_current_piece_total: 3,
+      progress_generated_audio_seconds: 8.5,
+      progress_elapsed_seconds: 35,
+      progress_eta_seconds: 140,
+      checkpoint_segment_id: "segment-a",
+      checkpoint_order: 1,
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(task, {
+      progress_completed_units: 11,
+      progress_total_units: 10,
       updated_at: serverTimestamp(),
     }));
     await assertFails(updateDoc(task, { priority: 999 }));

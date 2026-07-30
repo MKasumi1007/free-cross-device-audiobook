@@ -31,6 +31,19 @@ class CloudTask:
     lease_token: str = ""
     lease_deadline: datetime | None = None
     retry_not_before: datetime | None = None
+    progress_stage: str = ""
+    progress_completed_units: int = 0
+    progress_total_units: int = 0
+    progress_completed_segments: int = 0
+    progress_total_segments: int = 0
+    progress_current_segment_id: str = ""
+    progress_current_segment_order: int = 0
+    progress_current_piece: int = 0
+    progress_current_piece_total: int = 0
+    progress_generated_audio_seconds: float = 0.0
+    progress_elapsed_seconds: float = 0.0
+    progress_eta_seconds: float | None = None
+    progress_started_at: datetime | None = None
     update_time: str = ""
 
 
@@ -224,11 +237,25 @@ class FirestoreWorkerTasks:
             "lease_token": self._string(lease_token),
             "lease_deadline": self._timestamp(deadline),
             "pause_reason": {"nullValue": None},
+            "progress_stage": self._string("PREPARING"),
+            "progress_completed_units": self._integer(0),
+            "progress_total_units": self._integer(0),
+            "progress_completed_segments": self._integer(0),
+            "progress_total_segments": self._integer(0),
+            "progress_current_segment_id": {"nullValue": None},
+            "progress_current_segment_order": self._integer(0),
+            "progress_current_piece": self._integer(0),
+            "progress_current_piece_total": self._integer(0),
+            "progress_generated_audio_seconds": self._double(0),
+            "progress_elapsed_seconds": self._double(0),
+            "progress_eta_seconds": {"nullValue": None},
+            "progress_started_at": self._timestamp(datetime.now(UTC)),
         }
+        masks = list(fields)
         update_time = self._commit_update(
             task,
             fields,
-            ["status", "attempt_id", "lease_owner", "lease_token", "lease_deadline", "pause_reason"],
+            masks,
         )
         return CloudTask(
             **{
@@ -239,6 +266,19 @@ class FirestoreWorkerTasks:
                 "lease_token": lease_token,
                 "lease_deadline": deadline,
                 "pause_reason": "",
+                "progress_stage": "PREPARING",
+                "progress_completed_units": 0,
+                "progress_total_units": 0,
+                "progress_completed_segments": 0,
+                "progress_total_segments": 0,
+                "progress_current_segment_id": "",
+                "progress_current_segment_order": 0,
+                "progress_current_piece": 0,
+                "progress_current_piece_total": 0,
+                "progress_generated_audio_seconds": 0.0,
+                "progress_elapsed_seconds": 0.0,
+                "progress_eta_seconds": None,
+                "progress_started_at": datetime.now(UTC),
                 "update_time": update_time,
             }
         )
@@ -830,6 +870,7 @@ class FirestoreWorkerTasks:
         fields = self._fields(document)
         lease_deadline = fields.get("lease_deadline")
         retry_not_before = fields.get("retry_not_before")
+        progress_started_at = fields.get("progress_started_at")
         task_id = str(fields.get("task_id") or str(document.get("name", "")).rsplit("/", 1)[-1])
         return CloudTask(
             owner_uid=owner_uid,
@@ -849,6 +890,27 @@ class FirestoreWorkerTasks:
             lease_deadline=lease_deadline if isinstance(lease_deadline, datetime) else None,
             retry_not_before=(
                 retry_not_before if isinstance(retry_not_before, datetime) else None
+            ),
+            progress_stage=str(fields.get("progress_stage") or ""),
+            progress_completed_units=int(fields.get("progress_completed_units") or 0),
+            progress_total_units=int(fields.get("progress_total_units") or 0),
+            progress_completed_segments=int(fields.get("progress_completed_segments") or 0),
+            progress_total_segments=int(fields.get("progress_total_segments") or 0),
+            progress_current_segment_id=str(fields.get("progress_current_segment_id") or ""),
+            progress_current_segment_order=int(fields.get("progress_current_segment_order") or 0),
+            progress_current_piece=int(fields.get("progress_current_piece") or 0),
+            progress_current_piece_total=int(fields.get("progress_current_piece_total") or 0),
+            progress_generated_audio_seconds=float(
+                fields.get("progress_generated_audio_seconds") or 0
+            ),
+            progress_elapsed_seconds=float(fields.get("progress_elapsed_seconds") or 0),
+            progress_eta_seconds=(
+                float(fields["progress_eta_seconds"])
+                if fields.get("progress_eta_seconds") is not None
+                else None
+            ),
+            progress_started_at=(
+                progress_started_at if isinstance(progress_started_at, datetime) else None
             ),
             update_time=str(document.get("updateTime") or ""),
         )

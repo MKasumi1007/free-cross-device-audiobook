@@ -144,6 +144,20 @@ export interface GenerationTaskSummary {
   chunk_order?: number;
   estimated_seconds?: number;
   deletion_generation?: number;
+  attempt_id?: number;
+  progress_stage?: string;
+  progress_completed_units?: number;
+  progress_total_units?: number;
+  progress_completed_segments?: number;
+  progress_total_segments?: number;
+  progress_current_segment_id?: string | null;
+  progress_current_segment_order?: number;
+  progress_current_piece?: number;
+  progress_current_piece_total?: number;
+  progress_generated_audio_seconds?: number;
+  progress_elapsed_seconds?: number;
+  progress_eta_seconds?: number | null;
+  progress_started_at?: unknown;
 }
 
 export type GenerationQueueStatus =
@@ -167,6 +181,16 @@ export interface GenerationQueueItem {
   ready_chunks: number;
   pending_chunks: number;
   estimated_seconds: number;
+  progress_percent: number;
+  progress_stage: string;
+  current_task_id: string;
+  current_piece: number;
+  current_piece_total: number;
+  generated_audio_seconds: number;
+  elapsed_seconds: number;
+  eta_seconds: number | null;
+  chapter_eta_seconds: number | null;
+  historical_pause: boolean;
 }
 
 export interface VoiceGenerationProfile {
@@ -213,7 +237,10 @@ export function calculateAudioStats(chunks: readonly Pick<
 
 export async function loadAudioInventory(
   ownerUid: string,
-  books: readonly CloudBookSummary[],
+  books: readonly (
+    Pick<CloudBookSummary, "book_id" | "title">
+    & { chapters?: readonly { chapter_id: string; title: string }[] }
+  )[],
 ): Promise<AudioInventoryItem[]> {
   const { db } = requireServices();
   const inventory: AudioInventoryItem[] = [];
@@ -228,7 +255,9 @@ export async function loadAudioInventory(
       inventory.push({
         ...chunk,
         book_title: book.title,
-        chapter_title: chunk.chapter_id,
+        chapter_title: book.chapters?.find(
+          (chapter) => chapter.chapter_id === chunk.chapter_id,
+        )?.title || chunk.chapter_id,
       });
     }
   }
@@ -582,6 +611,36 @@ export function buildGenerationQueue(
       const pending = ordered.filter((task) => (
         task.status !== "READY" && task.status !== "CANCELLED"
       )).length;
+      const active = ordered.find((task) => ACTIVE_GENERATION_STATUSES.has(task.status));
+      const activeCompleted = Number(active?.progress_completed_units || 0);
+      const activeTotal = Number(active?.progress_total_units || 0);
+      const activeFraction = activeTotal > 0
+        ? Math.min(1, Math.max(0, activeCompleted / activeTotal))
+        : 0;
+      const total = ordered.length;
+      const progressPercent = total > 0
+        ? Math.min(100, ((ready + activeFraction) / total) * 100)
+        : 0;
+      const activeEta = active?.progress_eta_seconds == null
+        ? null
+        : Math.max(0, Number(active.progress_eta_seconds));
+      const generatedSeconds = Number(active?.progress_generated_audio_seconds || 0);
+      const elapsedSeconds = Number(active?.progress_elapsed_seconds || 0);
+      const realtimeFactor = generatedSeconds > 0 && elapsedSeconds > 0
+        ? elapsedSeconds / generatedSeconds
+        : null;
+      const remainingAfterActive = ordered
+        .filter((task) => (
+          task.status !== "READY"
+          && task.status !== "CANCELLED"
+          && task.task_id !== active?.task_id
+        ))
+        .reduce((totalSeconds, task) => (
+          totalSeconds + Number(task.estimated_seconds || 0)
+        ), 0);
+      const chapterEta = activeEta == null
+        ? null
+        : activeEta + (realtimeFactor == null ? 0 : remainingAfterActive * realtimeFactor);
       return {
         queue_id: queueId,
         book_id: group.book_id,
@@ -598,6 +657,21 @@ export function buildGenerationQueue(
           (total, task) => total + Number(task.estimated_seconds || 0),
           0,
         ),
+        progress_percent: progressPercent,
+        progress_stage: String(active?.progress_stage || active?.status || ""),
+        current_task_id: active?.task_id || "",
+        current_piece: Number(active?.progress_current_piece || 0),
+        current_piece_total: Number(active?.progress_current_piece_total || 0),
+        generated_audio_seconds: generatedSeconds,
+        elapsed_seconds: elapsedSeconds,
+        eta_seconds: activeEta,
+        chapter_eta_seconds: chapterEta,
+        historical_pause: ordered.some((task) => (
+          task.status === "PAUSED"
+          && task.pause_reason === "USER_PAUSED"
+          && Number(task.attempt_id || 0) > 0
+          && !task.progress_stage
+        )),
       };
     })
     .sort((left, right) => {

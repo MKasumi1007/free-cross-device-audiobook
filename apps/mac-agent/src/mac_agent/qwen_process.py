@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
+import wave
+from hashlib import sha256
 from pathlib import Path
 from typing import IO, Any, Callable, Protocol, cast
 
 from .generation import GeneratedAudio, GenerationError
+from .tts_text import split_generation_text
 
 
 class WorkerProcess(Protocol):
@@ -24,6 +28,7 @@ class WorkerProcess(Protocol):
 
 
 ProcessFactory = Callable[[list[str]], WorkerProcess]
+PieceProgressCallback = Callable[[int, int, float], None]
 
 
 def _start_process(command: list[str], stderr_path: Path) -> WorkerProcess:
@@ -74,83 +79,236 @@ class QwenProcessGenerator:
     def loaded(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
-    def generate(self, text: str, output_wav: Path) -> GeneratedAudio:
+    def generate(
+        self,
+        text: str,
+        output_wav: Path,
+        on_progress: PieceProgressCallback | None = None,
+    ) -> GeneratedAudio:
         with self._lock:
-            process = self._ensure_process()
-            if process.stdin is None or process.stdout is None:
-                self._stop_locked()
-                raise GenerationError("TTS_WORKER_BROKEN", "语音模型进程无法通信。")
-            request = {
-                "command": "generate",
-                "reference_audio": str(self.reference_audio),
-                "reference_text": self.reference_text,
-                "text": text,
-                "output": str(output_wav),
-            }
-            try:
-                process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
-                process.stdin.flush()
-                response_line = process.stdout.readline()
-                if not response_line:
-                    exit_code = process.poll()
-                    self._stop_locked()
-                    raise GenerationError(
-                        "TTS_WORKER_EXITED",
-                        "语音模型进程意外退出，稍后会从检查点继续。",
-                        details={
-                            "exit_code": exit_code,
-                            "python_path": str(self.python_path),
-                            "model": self.model,
-                            "stderr_path": str(self.stderr_path),
-                            "stderr_tail": self._stderr_tail(),
-                        },
+            pieces = split_generation_text(text)
+            if not pieces:
+                raise GenerationError("TTS_EMPTY_OUTPUT", "语音模型没有生成有效音频。")
+            parts_root = output_wav.with_suffix(".parts")
+            parts_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fingerprint = self._piece_fingerprint(text)
+            completed = self._load_piece_checkpoint(parts_root, fingerprint)
+            records: list[dict[str, str | int | float]] = []
+            total_duration = 0.0
+            sample_rate = 0
+            for index, piece in enumerate(pieces):
+                part_path = parts_root / f"{index:04d}.wav"
+                existing = completed.get(index)
+                if (
+                    existing
+                    and existing.get("text_sha256") == sha256(piece.encode("utf-8")).hexdigest()
+                    and part_path.is_file()
+                    and part_path.stat().st_size > 44
+                ):
+                    generated = GeneratedAudio(
+                        duration_seconds=float(existing["duration_seconds"]),
+                        sample_rate=int(existing["sample_rate"]),
                     )
-                response: dict[str, Any] = json.loads(response_line)
-            except GenerationError:
-                raise
-            except (BrokenPipeError, OSError, json.JSONDecodeError) as error:
+                else:
+                    part_path.unlink(missing_ok=True)
+                    generated = self._generate_piece(piece, part_path)
+                if sample_rate and generated.sample_rate != sample_rate:
+                    raise GenerationError(
+                        "AUDIO_VALIDATION_FAILED",
+                        "语音模型在同一段中返回了不同采样率。",
+                    )
+                sample_rate = generated.sample_rate
+                total_duration += generated.duration_seconds
+                record: dict[str, str | int | float] = {
+                    "index": index,
+                    "text_sha256": sha256(piece.encode("utf-8")).hexdigest(),
+                    "duration_seconds": generated.duration_seconds,
+                    "sample_rate": generated.sample_rate,
+                }
+                records.append(record)
+                self._write_piece_checkpoint(parts_root, fingerprint, records)
+                if on_progress:
+                    on_progress(index + 1, len(pieces), total_duration)
+            self._concatenate_parts(
+                [parts_root / f"{index:04d}.wav" for index in range(len(pieces))],
+                output_wav,
+            )
+            return GeneratedAudio(duration_seconds=total_duration, sample_rate=sample_rate)
+
+    def _generate_piece(self, text: str, output_wav: Path) -> GeneratedAudio:
+        process = self._ensure_process()
+        if process.stdin is None or process.stdout is None:
+            self._stop_locked()
+            raise GenerationError("TTS_WORKER_BROKEN", "语音模型进程无法通信。")
+        request = {
+            "command": "generate",
+            "reference_audio": str(self.reference_audio),
+            "reference_text": self.reference_text,
+            "text": text,
+            "output": str(output_wav),
+        }
+        try:
+            process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            process.stdin.flush()
+            response_line = process.stdout.readline()
+            if not response_line:
+                exit_code = process.poll()
                 self._stop_locked()
                 raise GenerationError(
                     "TTS_WORKER_EXITED",
-                    "语音模型意外退出，稍后会从检查点继续。",
+                    "语音模型进程意外退出，稍后会从小批次检查点继续。",
                     details={
+                        "exit_code": exit_code,
                         "python_path": str(self.python_path),
                         "model": self.model,
-                        "response": response_line if "response_line" in locals() else "",
                         "stderr_path": str(self.stderr_path),
                         "stderr_tail": self._stderr_tail(),
                     },
-                ) from error
-            if response.get("status") != "ok":
-                code = str(response.get("code") or "TTS_GENERATION_FAILED")
-                details = {
+                )
+            response: dict[str, Any] = json.loads(response_line)
+        except GenerationError:
+            raise
+        except (BrokenPipeError, OSError, json.JSONDecodeError) as error:
+            self._stop_locked()
+            raise GenerationError(
+                "TTS_WORKER_EXITED",
+                "语音模型意外退出，稍后会从小批次检查点继续。",
+                details={
                     "python_path": str(self.python_path),
                     "model": self.model,
-                    "worker_error_type": response.get("error_type"),
-                    "worker_error": response.get("error"),
-                    "worker_traceback": response.get("traceback"),
+                    "response": response_line if "response_line" in locals() else "",
                     "stderr_path": str(self.stderr_path),
                     "stderr_tail": self._stderr_tail(),
-                }
-                self._stop_locked()
-                raise GenerationError(
-                    code,
-                    self._user_message(code),
-                    details=details,
-                )
-            self._arm_idle_timer()
-            try:
-                return GeneratedAudio(
-                    duration_seconds=float(response["duration_seconds"]),
-                    sample_rate=int(response["sample_rate"]),
-                )
-            except (KeyError, TypeError, ValueError) as error:
-                self._stop_locked()
-                raise GenerationError(
-                    "TTS_WORKER_BROKEN",
-                    "语音模型返回了无法识别的结果，完整响应已写入本机日志。",
-                    details={"response": response, "stderr_tail": self._stderr_tail()},
-                ) from error
+                },
+            ) from error
+        if response.get("status") != "ok":
+            code = str(response.get("code") or "TTS_GENERATION_FAILED")
+            details = {
+                "python_path": str(self.python_path),
+                "model": self.model,
+                "worker_error_type": response.get("error_type"),
+                "worker_error": response.get("error"),
+                "worker_traceback": response.get("traceback"),
+                "stderr_path": str(self.stderr_path),
+                "stderr_tail": self._stderr_tail(),
+            }
+            self._stop_locked()
+            raise GenerationError(
+                code,
+                self._user_message(code),
+                details=details,
+            )
+        self._arm_idle_timer()
+        try:
+            generated = GeneratedAudio(
+                duration_seconds=float(response["duration_seconds"]),
+                sample_rate=int(response["sample_rate"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            self._stop_locked()
+            raise GenerationError(
+                "TTS_WORKER_BROKEN",
+                "语音模型返回了无法识别的结果，完整响应已写入本机日志。",
+                details={"response": response, "stderr_tail": self._stderr_tail()},
+            ) from error
+        if not output_wav.is_file() or output_wav.stat().st_size <= 44:
+            raise GenerationError("TTS_EMPTY_OUTPUT", "语音模型没有保存有效的小批次音频。")
+        return generated
+
+    def discard_checkpoint(self, output_wav: Path) -> None:
+        shutil.rmtree(output_wav.with_suffix(".parts"), ignore_errors=True)
+
+    def _piece_fingerprint(self, text: str) -> str:
+        try:
+            audio_stat = self.reference_audio.stat()
+            audio_identity = f"{audio_stat.st_size}:{audio_stat.st_mtime_ns}"
+        except OSError:
+            audio_identity = str(self.reference_audio)
+        return sha256(
+            json.dumps(
+                {
+                    "model": self.model,
+                    "reference_audio": audio_identity,
+                    "reference_text": self.reference_text,
+                    "text": text,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _load_piece_checkpoint(
+        parts_root: Path,
+        fingerprint: str,
+    ) -> dict[int, dict[str, Any]]:
+        path = parts_root / "checkpoint.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if payload.get("fingerprint") != fingerprint:
+            shutil.rmtree(parts_root, ignore_errors=True)
+            parts_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            return {}
+        records = payload.get("pieces")
+        if not isinstance(records, list):
+            return {}
+        return {
+            int(record["index"]): record
+            for record in records
+            if isinstance(record, dict) and isinstance(record.get("index"), int)
+        }
+
+    @staticmethod
+    def _write_piece_checkpoint(
+        parts_root: Path,
+        fingerprint: str,
+        records: list[dict[str, str | int | float]],
+    ) -> None:
+        path = parts_root / "checkpoint.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {"fingerprint": fingerprint, "pieces": records},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+        path.chmod(0o600)
+
+    @staticmethod
+    def _concatenate_parts(parts: list[Path], destination: Path) -> None:
+        temporary = destination.with_suffix(".assembling.wav")
+        parameters: tuple[int, int, int] | None = None
+        try:
+            with wave.open(str(temporary), "wb") as writer:
+                for part in parts:
+                    with wave.open(str(part), "rb") as reader:
+                        current = (
+                            reader.getnchannels(),
+                            reader.getsampwidth(),
+                            reader.getframerate(),
+                        )
+                        if parameters is None:
+                            parameters = current
+                            writer.setnchannels(current[0])
+                            writer.setsampwidth(current[1])
+                            writer.setframerate(current[2])
+                        elif current != parameters:
+                            raise GenerationError(
+                                "AUDIO_VALIDATION_FAILED",
+                                "小批次音频格式不一致，稍后会重新生成。",
+                            )
+                        writer.writeframes(reader.readframes(reader.getnframes()))
+            if parameters is None:
+                raise GenerationError("TTS_EMPTY_OUTPUT", "没有可合并的小批次音频。")
+            os.replace(temporary, destination)
+            destination.chmod(0o600)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def unload(self) -> None:
         with self._lock:

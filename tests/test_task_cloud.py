@@ -101,6 +101,8 @@ def test_worker_lists_and_claims_only_metadata_without_book_text() -> None:
     assert "书籍正文" not in body
     assert "private-id-token" not in body
     assert deadline not in body
+    assert '"progress_stage":{"stringValue":"PREPARING"}' in body
+    assert '"progress_completed_units":{"integerValue":"0"}' in body
 
 
 def test_worker_presence_uses_server_time_without_exposing_tokens() -> None:

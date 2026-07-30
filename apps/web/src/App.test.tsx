@@ -49,7 +49,7 @@ vi.mock("./agent", () => ({
   getAgentDiagnostics: vi.fn(async () => ({
     schema_version: 1,
     checked_at: "2026-07-18T00:00:00Z",
-    agent_version: "0.3.0",
+    agent_version: "0.4.0",
     agent_port: 17832,
     data_root: "/private/application-support",
     log_path: "/private/application-support/logs/diagnostics.jsonl",

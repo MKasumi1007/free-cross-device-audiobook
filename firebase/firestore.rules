@@ -168,6 +168,48 @@ service cloud.firestore {
         );
     }
 
+    function validWorkerProgress() {
+      return !request.resource.data.keys().hasAny(['progress_stage']) || (
+        request.resource.data.progress_stage in [
+          'PREPARING', 'MODEL_LOADING', 'GENERATING', 'ENCODING',
+          'UPLOADING', 'READY', 'FAILED_RETRYABLE'
+        ]
+        && request.resource.data.progress_completed_units is int
+        && request.resource.data.progress_completed_units >= 0
+        && request.resource.data.progress_total_units is int
+        && request.resource.data.progress_total_units >= 0
+        && request.resource.data.progress_completed_units <= request.resource.data.progress_total_units
+        && request.resource.data.progress_completed_segments is int
+        && request.resource.data.progress_completed_segments >= 0
+        && request.resource.data.progress_total_segments is int
+        && request.resource.data.progress_total_segments >= 0
+        && request.resource.data.progress_completed_segments <= request.resource.data.progress_total_segments
+        && (
+          request.resource.data.progress_current_segment_id == null
+          || request.resource.data.progress_current_segment_id is string
+        )
+        && request.resource.data.progress_current_segment_order is int
+        && request.resource.data.progress_current_segment_order >= 0
+        && request.resource.data.progress_current_piece is int
+        && request.resource.data.progress_current_piece >= 0
+        && request.resource.data.progress_current_piece_total is int
+        && request.resource.data.progress_current_piece_total >= 0
+        && request.resource.data.progress_current_piece <= request.resource.data.progress_current_piece_total
+        && request.resource.data.progress_generated_audio_seconds is number
+        && request.resource.data.progress_generated_audio_seconds >= 0
+        && request.resource.data.progress_elapsed_seconds is number
+        && request.resource.data.progress_elapsed_seconds >= 0
+        && (
+          request.resource.data.progress_eta_seconds == null
+          || (
+            request.resource.data.progress_eta_seconds is number
+            && request.resource.data.progress_eta_seconds >= 0
+          )
+        )
+        && request.resource.data.progress_started_at is timestamp
+      );
+    }
+
     match /users/{ownerUid} {
       allow read: if isOwner(ownerUid);
       allow create: if isOwner(ownerUid) && requestKeepsOwner(ownerUid);
@@ -486,7 +528,13 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'status', 'attempt_id', 'lease_owner', 'lease_token', 'lease_deadline',
               'checkpoint_segment_id', 'checkpoint_order', 'error_code', 'error_message',
-              'pause_reason', 'retry_not_before', 'updated_at'
+              'pause_reason', 'retry_not_before', 'updated_at',
+              'progress_stage', 'progress_completed_units', 'progress_total_units',
+              'progress_completed_segments', 'progress_total_segments',
+              'progress_current_segment_id', 'progress_current_segment_order',
+              'progress_current_piece', 'progress_current_piece_total',
+              'progress_generated_audio_seconds', 'progress_elapsed_seconds',
+              'progress_eta_seconds', 'progress_started_at'
           ])
           && (
             request.resource.data.status != 'PAUSED'
@@ -497,6 +545,7 @@ service cloud.firestore {
           )
           && validWorkerTransition()
           && validWorkerLease()
+          && validWorkerProgress()
         );
         allow delete: if false;
       }
