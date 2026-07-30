@@ -61,7 +61,7 @@ def create_app(
     worker: object | None = None,
     diagnostics: SystemDiagnostics | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="听书工具 Mac Agent", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="米兰读书 Mac Agent", docs_url=None, redoc_url=None, openapi_url=None)
     token_store = tokens or CsrfTokenStore()
     root = data_root()
     local_library = library or LocalLibrary(root / "books", NativeBookPicker())

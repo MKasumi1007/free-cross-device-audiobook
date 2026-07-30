@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 ACTION="${1:-runtime}"
-DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$HOME/Library/Application Support/听见书页}"
+LEGACY_DATA_DIRECTORY="听见书页"
+DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$HOME/Library/Application Support/$LEGACY_DATA_DIRECTORY}"
 INSTALLER="$DATA_ROOT/installer/install.sh"
 
 case "$ACTION" in

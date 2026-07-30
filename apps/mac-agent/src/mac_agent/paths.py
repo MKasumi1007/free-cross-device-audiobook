@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 
 
-APP_NAME = "听见书页"
+APP_NAME = "米兰读书"
+LEGACY_DATA_DIRECTORY = "听见书页"
 APP_VERSION = "0.4.0"
 AGENT_PORT = 17832
 DEFAULT_QWEN_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
@@ -14,7 +15,8 @@ def data_root() -> Path:
     configured = os.environ.get("AUDIOBOOK_DATA_ROOT")
     if configured:
         return Path(configured).expanduser().resolve()
-    return Path.home() / "Library/Application Support" / APP_NAME
+    # Keep the original directory so a display-name change never hides user data.
+    return Path.home() / "Library/Application Support" / LEGACY_DATA_DIRECTORY
 
 
 def agent_python() -> Path:

@@ -1,8 +1,9 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-APP_NAME="听见书页"
-APP_VERSION="0.2.0"
+APP_NAME="米兰读书"
+LEGACY_DATA_DIRECTORY="听见书页"
+APP_VERSION="0.4.0"
 UV_VERSION="0.11.29"
 FFMPEG_VERSION="7.1"
 IMAGEIO_FFMPEG_VERSION="0.6.0"
@@ -10,7 +11,7 @@ FFMPEG_WHEEL_SHA256="b1ae3173414b5fc5f538a726c4e48ea97edc0d2cdc11f103afee655c463
 FFMPEG_BINARY_SHA256="6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617"
 FFMPEG_WHEEL_URL="https://files.pythonhosted.org/packages/40/5c/f3d8a657d362cc93b81aab8feda487317da5b5d31c0e1fdfd5e986e55d17/imageio_ffmpeg-0.6.0-py3-none-macosx_11_0_arm64.whl"
 MODEL_REPOSITORY="models--Qwen--Qwen3-TTS-12Hz-0.6B-Base"
-DEFAULT_DATA_ROOT="$HOME/Library/Application Support/$APP_NAME"
+DEFAULT_DATA_ROOT="$HOME/Library/Application Support/$LEGACY_DATA_DIRECTORY"
 DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$DEFAULT_DATA_ROOT}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -262,9 +263,11 @@ fi
 if [[ -d "$SOURCE_ROOT/installer/apps" ]]; then
   APP_TARGET="$HOME/Applications/$APP_NAME"
   mkdir -p "$APP_TARGET"
-  for app in "$SOURCE_ROOT/installer/apps/听见书页.app" "$SOURCE_ROOT/installer/apps/更新听见书页.app" "$SOURCE_ROOT/installer/apps/卸载听见书页.app"; do
+  for app in "$SOURCE_ROOT/installer/apps/米兰读书.app" "$SOURCE_ROOT/installer/apps/更新米兰读书.app" "$SOURCE_ROOT/installer/apps/卸载米兰读书.app"; do
     [[ -d "$app" ]] && /usr/bin/ditto "$app" "$APP_TARGET/$(basename "$app")"
   done
+  # The old folder contains shortcuts only; user data remains in Application Support.
+  /bin/rm -rf "$HOME/Applications/$LEGACY_DATA_DIRECTORY"
 fi
 
 if [[ "$ACTION" != "model" && "$ACTION" != "qwen" ]]; then

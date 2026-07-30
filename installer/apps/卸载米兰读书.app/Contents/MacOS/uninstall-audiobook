@@ -5,7 +5,7 @@ if [[ ! -x "$UNINSTALLER" ]]; then
   /usr/bin/osascript -e 'display dialog "没有找到已安装的卸载组件。" with title "无法卸载" buttons {"知道了"} with icon stop'
   exit 1
 fi
-ANSWER="$(/usr/bin/osascript -e 'button returned of (display dialog "将删除后台服务和运行环境，但会保留书架、声音、进度、生成记录和模型。是否继续？" with title "卸载听见书页" buttons {"取消", "确认卸载"} default button "取消" cancel button "取消" with icon caution)' 2>/dev/null || true)"
+ANSWER="$(/usr/bin/osascript -e 'button returned of (display dialog "将删除后台服务和运行环境，但会保留书架、声音、进度、生成记录和模型。是否继续？" with title "卸载米兰读书" buttons {"取消", "确认卸载"} default button "取消" cancel button "取消" with icon caution)' 2>/dev/null || true)"
 [[ "$ANSWER" == "确认卸载" ]] || exit 0
 if /bin/bash "$UNINSTALLER"; then
   /usr/bin/osascript -e 'display dialog "后台服务已卸载。你的书架和声音数据仍保留在 Application Support 中。" with title "卸载完成" buttons {"完成"} with icon note'

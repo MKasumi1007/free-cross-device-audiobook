@@ -3,7 +3,9 @@ set -Eeuo pipefail
 
 LABEL="io.github.mkasumi1007.audiobook-mac-agent"
 WATCHDOG_LABEL="io.github.mkasumi1007.audiobook-mac-agent-watchdog"
-DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$HOME/Library/Application Support/听见书页}"
+APP_NAME="米兰读书"
+LEGACY_DATA_DIRECTORY="听见书页"
+DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$HOME/Library/Application Support/$LEGACY_DATA_DIRECTORY}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 WATCHDOG_PLIST="$HOME/Library/LaunchAgents/$WATCHDOG_LABEL.plist"
 DOMAIN="gui/$(id -u)"
@@ -28,7 +30,8 @@ for target in \
   esac
 done
 
-/bin/rm -rf "$HOME/Applications/听见书页"
+/bin/rm -rf "$HOME/Applications/$APP_NAME"
+/bin/rm -rf "$HOME/Applications/$LEGACY_DATA_DIRECTORY"
 echo "后台服务和运行组件已卸载。"
 echo "以下用户数据被完整保留："
 echo "  $DATA_ROOT/books"

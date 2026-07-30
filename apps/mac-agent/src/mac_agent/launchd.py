@@ -219,7 +219,7 @@ def main() -> None:
     watchdog = install_watchdog()
     ensure_launch_agent(watchdog, WATCHDOG_LABEL)
     reload_launch_agent(path)
-    print("听书工具已设置为登录后自动启动。")
+    print("米兰读书已设置为登录后自动启动。")
 
 
 if __name__ == "__main__":

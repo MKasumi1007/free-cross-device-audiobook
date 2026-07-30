@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 REPOSITORY="MKasumi1007/free-cross-device-audiobook"
-DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$HOME/Library/Application Support/听见书页}"
+LEGACY_DATA_DIRECTORY="听见书页"
+DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$HOME/Library/Application Support/$LEGACY_DATA_DIRECTORY}"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/audiobook-update.XXXXXX")"
 trap '/bin/rm -rf "$TEMP_DIR"' EXIT
 

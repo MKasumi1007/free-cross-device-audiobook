@@ -30,8 +30,8 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["seal.svg"],
       manifest: {
-        name: "听见书页",
-        short_name: "听见书页",
+        name: "米兰读书",
+        short_name: "米兰读书",
         description: "在 Mac 添加书，在手机和电脑边听边看。",
         lang: "zh-CN",
         theme_color: "#a43b2b",

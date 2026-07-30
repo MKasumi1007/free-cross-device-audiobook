@@ -196,8 +196,8 @@ export function PlayerDock({
     if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: book.title,
-      artist: book.author || "听见书页",
-      album: "听见书页",
+      artist: book.author || "米兰读书",
+      album: "米兰读书",
     });
     const audio = audioRef.current;
     const seek = (seconds: number) => {

@@ -731,8 +731,8 @@ export function App() {
     <div className="app-shell">
       <header className="topbar">
         <button className="brand" onClick={() => setSelectedBookId("")} aria-label="返回书架">
-          <span className="brand-seal">听</span>
-          <span><b>听见书页</b><small>边听，边读，记住每一处停留</small></span>
+          <span className="brand-seal">米</span>
+          <span><b>米兰读书</b><small>边听，边读，记住每一处停留</small></span>
         </button>
         <div className="topbar-actions">
           <span className={`sync-state ${user && !cloudSyncPaused ? "is-online" : ""}`}><i /> {cloudSyncPaused ? "免费额度保护中" : user ? "云同步已开启" : "本机书架"}</span>

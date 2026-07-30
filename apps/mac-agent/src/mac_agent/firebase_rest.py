@@ -16,6 +16,7 @@ import certifi
 
 from .error_reporting import AgentOperationError
 from .keychain import MacOSKeychainTokenStore, TokenStore
+from .paths import data_root
 
 
 class FirebaseRestError(AgentOperationError):
@@ -78,7 +79,7 @@ class FirebasePublicConfig:
     @classmethod
     def load(cls, path: Path | None = None) -> FirebasePublicConfig | None:
         candidates = [path] if path else [
-            Path.home() / "Library/Application Support/听见书页/firebase-public-config.json",
+            data_root() / "firebase-public-config.json",
             Path(__file__).resolve().parents[4] / "config/firebase-public-config.json",
         ]
         for config_path in candidates:

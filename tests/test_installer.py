@@ -21,6 +21,21 @@ def test_installer_scripts_are_valid_and_double_click_apps_are_executable() -> N
     executables = list((ROOT / "installer/apps").glob("*.app/Contents/MacOS/*"))
     assert len(executables) == 4
     assert all(os.access(path, os.X_OK) for path in executables)
+    app_names = {path.parents[2].name for path in executables}
+    assert app_names == {
+        "米兰读书.app",
+        "更新米兰读书.app",
+        "卸载米兰读书.app",
+        "米兰读书安装器.app",
+    }
+
+
+def test_brand_rename_keeps_the_existing_data_directory() -> None:
+    script = (ROOT / "installer/install.sh").read_text(encoding="utf-8")
+    assert 'APP_NAME="米兰读书"' in script
+    assert 'LEGACY_DATA_DIRECTORY="听见书页"' in script
+    assert "Application Support/$LEGACY_DATA_DIRECTORY" in script
+    assert "Application Support/$APP_NAME" not in script
 
 
 def test_idle_updater_waits_for_checkpoint_and_runs_runtime_repair(tmp_path: Path) -> None:
@@ -104,6 +119,10 @@ def test_uninstaller_removes_service_but_preserves_books_voices_and_models(tmp_p
     )
     watchdog = launch_agents / "io.github.mkasumi1007.audiobook-mac-agent-watchdog.plist"
     watchdog.write_text("watchdog", encoding="utf-8")
+    for app_folder in ("米兰读书", "听见书页"):
+        shortcut = tmp_path / "Applications" / app_folder
+        shortcut.mkdir(parents=True)
+        (shortcut / "marker").write_text(app_folder, encoding="utf-8")
     result = subprocess.run(
         ["/bin/bash", str(ROOT / "installer/uninstall.sh")],
         env=environment,
@@ -118,3 +137,5 @@ def test_uninstaller_removes_service_but_preserves_books_voices_and_models(tmp_p
     assert (data_root / "voices/marker").read_text(encoding="utf-8") == "voices"
     assert (data_root / "models/marker").read_text(encoding="utf-8") == "models"
     assert not watchdog.exists()
+    assert not (tmp_path / "Applications/米兰读书").exists()
+    assert not (tmp_path / "Applications/听见书页").exists()

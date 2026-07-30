@@ -1,4 +1,4 @@
-# 听见书页 / Free Cross-Device Audiobook
+# 米兰读书 / Free Cross-Device Audiobook
 
 一个在 Apple Silicon Mac 本地运行 Qwen3-TTS、通过网页在电脑和手机阅读与收听的开源项目。私密书籍、声音样本和生成中间文件不得进入 Git；未确认传播权的内容只能使用账号隔离的 Firestore 私密路径。
 
@@ -24,10 +24,10 @@
 
 ## 普通用户安装
 
-1. 从 [Releases](https://github.com/MKasumi1007/free-cross-device-audiobook/releases) 下载 `听见书页安装器-0.2.0.zip`。
-2. 解压后双击 `听见书页安装器.app`。这是未购买 Apple Developer 证书的开源应用；如果 Gatekeeper 拦截，请在 Finder 中右键它、选择“打开”，再确认一次。
+1. 从 [Releases](https://github.com/MKasumi1007/free-cross-device-audiobook/releases) 下载 `米兰读书安装器-0.4.0.zip`。
+2. 解压后双击 `米兰读书安装器.app`。这是未购买 Apple Developer 证书的开源应用；如果 Gatekeeper 拦截，请在 Finder 中右键它、选择“打开”，再确认一次。
 3. 首次安装会自动准备独立 Python、Agent、Qwen 依赖、FFmpeg、约 2.3 GiB 模型，并执行真实中文生成与 M4A 自检。需要网络、Apple Silicon Mac 和至少 6 GiB 可用磁盘；耗时取决于网速与机器。
-4. 安装成功后会自动启动后台服务，并在 `~/Applications/听见书页/` 放置网页、更新和卸载入口。
+4. 安装成功后会自动启动后台服务，并在 `~/Applications/米兰读书/` 放置网页、更新和卸载入口。
 5. 打开网页的“系统状态”。所有本机项目正常后，再登录、连接 Mac、添加书和设置声音。
 
 日常使用不需要 Node、Python、Homebrew 或终端。详细步骤见 [普通用户指南](docs/USER_GUIDE.md)。
@@ -42,7 +42,7 @@
 - `LOCAL_ONLY` 正文、时间线和音频只能进入所有者私密 Firestore 文档；声音样本不上传。
 - 更新采用 `.next → current` 原子切换和 `.previous` 回滚；卸载保留 `books`、`voices`、`generation` 与 `models`。
 
-正式本机目录：
+正式本机目录（为保证已有书架、声音和进度不因品牌改名而丢失，继续使用原兼容目录名）：
 
 ```text
 ~/Library/Application Support/听见书页/

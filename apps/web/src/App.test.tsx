@@ -117,6 +117,7 @@ describe("书架响应式入口", () => {
 
   it("Mac 桌面显示添加书籍按钮和真实章节正文", async () => {
     render(<App />);
+    expect(screen.getByText("米兰读书")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /添加书籍/ })).toBeInTheDocument();
     expect(await screen.findByText("山窗小札")).toBeInTheDocument();
     expect(screen.getAllByText("第一章 清晨")).toHaveLength(2);
