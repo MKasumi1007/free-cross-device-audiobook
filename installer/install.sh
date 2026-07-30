@@ -310,9 +310,11 @@ fi
 if [[ -d "$SOURCE_ROOT/installer/apps" ]]; then
   APP_TARGET="$HOME/Applications/$APP_NAME"
   mkdir -p "$APP_TARGET"
-  for app in "$SOURCE_ROOT/installer/apps/米兰读书.app" "$SOURCE_ROOT/installer/apps/更新米兰读书.app" "$SOURCE_ROOT/installer/apps/卸载米兰读书.app"; do
-    [[ -d "$app" ]] && /usr/bin/ditto "$app" "$APP_TARGET/$(basename "$app")"
-  done
+  MAIN_APP="$SOURCE_ROOT/installer/apps/米兰读书.app"
+  [[ -d "$MAIN_APP" ]] && /usr/bin/ditto "$MAIN_APP" "$APP_TARGET/米兰读书.app"
+  # Update and uninstall remain available as scripts in Application Support,
+  # but no longer appear as separate apps in Launchpad.
+  /bin/rm -rf "$APP_TARGET/更新米兰读书.app" "$APP_TARGET/卸载米兰读书.app"
   # The old folder contains shortcuts only; user data remains in Application Support.
   /bin/rm -rf "$HOME/Applications/$LEGACY_DATA_DIRECTORY"
 fi
