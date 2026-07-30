@@ -2,10 +2,9 @@ import type { ParsedBook } from "@audiobook/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildGenerationQueue,
   calculateAudioStats,
-  generationTaskUpdate,
   planGenerationRequests,
-  selectNextFiveHours,
 } from "./cloud";
 
 function longBook(): ParsedBook {
@@ -36,44 +35,72 @@ function longBook(): ParsedBook {
   };
 }
 
-describe("five-hour generation queue", () => {
-  it("selects the next five hours after an existing first batch", () => {
+describe("manual chapter generation queue", () => {
+  it("plans every selected chapter chunk so the worker can enforce the cache limit", () => {
     const requests = planGenerationRequests(longBook(), "voice-a");
-    const first = selectNextFiveHours(requests, new Set());
-    expect(first).toHaveLength(30);
-
-    const second = selectNextFiveHours(requests, new Set(first.map((item) => item.taskId)));
-    expect(second).toHaveLength(5);
-    expect(second[0]?.startSegmentId).toBe("segment-030");
+    expect(requests).toHaveLength(35);
+    expect(requests[30]?.startSegmentId).toBe("segment-030");
   });
 
-  it("prioritizes the open book and pauses only books inactive for 48 hours", () => {
-    const inactive = new Set(["book-old"]);
-    expect(generationTaskUpdate(
-      { book_id: "book-active", status: "QUEUED", priority: 100 },
-      "book-active",
-      inactive,
-    )).toEqual({ priority: 300 });
-    expect(generationTaskUpdate(
-      { book_id: "book-old", status: "QUEUED", priority: 100 },
-      "book-active",
-      inactive,
-    )).toEqual({ status: "PAUSED", pause_reason: "INACTIVE_48_HOURS", priority: 100 });
-    expect(generationTaskUpdate(
-      { book_id: "book-active", status: "PAUSED", pause_reason: "INACTIVE_48_HOURS" },
-      "book-active",
-      inactive,
-    )).toEqual({ status: "QUEUED", pause_reason: null, priority: 300 });
-    expect(generationTaskUpdate(
-      { book_id: "book-active", status: "FAILED_RETRYABLE", priority: 100 },
-      "book-active",
-      inactive,
-    )).toEqual({ status: "QUEUED", pause_reason: null, priority: 300 });
-    expect(generationTaskUpdate(
-      { book_id: "book-old", status: "FAILED_RETRYABLE", priority: 300 },
-      "book-active",
-      inactive,
-    )).toEqual({ status: "PAUSED", pause_reason: "INACTIVE_48_HOURS", priority: 100 });
+  it("records chapter identity and order on every planned chunk", () => {
+    const requests = planGenerationRequests(longBook(), "voice-a");
+    expect(requests[0]).toMatchObject({
+      bookId: "book-long",
+      bookTitle: "长篇测试书",
+      chapterId: "chapter-1",
+      chapterTitle: "第一章",
+      chunkOrder: 0,
+    });
+    expect(requests[34]?.chunkOrder).toBe(34);
+  });
+
+  it("groups chunks into a persistent manual chapter queue", () => {
+    const queue = buildGenerationQueue([
+      {
+        task_id: "chapter-1-b",
+        book_id: "book-long",
+        chapter_id: "chapter-1",
+        chapter_title: "第一章",
+        status: "QUEUED",
+        priority: 999,
+        chunk_order: 1,
+        estimated_seconds: 600,
+      },
+      {
+        task_id: "chapter-1-a",
+        book_id: "book-long",
+        chapter_id: "chapter-1",
+        chapter_title: "第一章",
+        status: "READY",
+        priority: 1_000,
+        chunk_order: 0,
+        estimated_seconds: 600,
+      },
+      {
+        task_id: "chapter-2-a",
+        book_id: "book-long",
+        chapter_id: "chapter-2",
+        chapter_title: "第二章",
+        status: "PAUSED",
+        pause_reason: "USER_PAUSED",
+        priority: 500,
+        chunk_order: 0,
+        estimated_seconds: 300,
+      },
+    ], [longBook()]);
+    expect(queue).toHaveLength(2);
+    expect(queue[0]).toMatchObject({
+      queue_id: "book-long:chapter-1",
+      status: "QUEUED",
+      task_ids: ["chapter-1-a", "chapter-1-b"],
+      ready_chunks: 1,
+      pending_chunks: 1,
+      estimated_seconds: 1_200,
+    });
+    expect(queue[1]).toMatchObject({
+      queue_id: "book-long:chapter-2",
+      status: "PAUSED",
+    });
   });
 });
 

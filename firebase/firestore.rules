@@ -438,6 +438,35 @@ service cloud.firestore {
         allow delete: if isOwner(ownerUid);
       }
 
+      match /voiceSettings/{settingId} {
+        allow read: if isOwner(ownerUid);
+        allow create: if isOwner(ownerUid)
+          && settingId == 'current'
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.setting_id == settingId
+          && request.resource.data.confirmed == true
+          && request.resource.data.voice_version is string
+          && request.resource.data.voice_version.size() > 0
+          && request.resource.data.voice_version.size() <= 128
+          && request.resource.data.updated_at == request.time
+          && request.resource.data.keys().hasOnly([
+            'owner_uid', 'setting_id', 'voice_version', 'confirmed', 'updated_at'
+          ]);
+        allow update: if isOwner(ownerUid)
+          && settingId == 'current'
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.setting_id == settingId
+          && request.resource.data.confirmed == true
+          && request.resource.data.voice_version is string
+          && request.resource.data.voice_version.size() > 0
+          && request.resource.data.voice_version.size() <= 128
+          && request.resource.data.updated_at == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'voice_version', 'confirmed', 'updated_at'
+          ]);
+        allow delete: if false;
+      }
+
       match /generationRequests/{taskId} {
         allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
         allow create: if isOwner(ownerUid)

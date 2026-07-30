@@ -113,6 +113,28 @@ def test_worker_presence_uses_server_time_without_exposing_tokens() -> None:
     assert "private-id-token" not in body
 
 
+def test_ready_audio_seconds_counts_only_playable_cache() -> None:
+    transport = FakeTransport([
+        (200, [
+            {"document": document("users/owner-a/books/book-a/audioChunks/chunk-a", {
+                "status": "READY",
+                "duration_seconds": "7200.5",
+            })},
+            {"document": document("users/owner-a/books/book-a/audioChunks/chunk-b", {
+                "status": "DELETING",
+                "duration_seconds": "900",
+            })},
+            {"document": document("users/owner-a/books/book-a/audioChunks/chunk-c", {
+                "status": "READY",
+                "duration_seconds": "1800",
+            })},
+        ]),
+    ])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+
+    assert tasks.ready_audio_seconds("owner-a", ["book-a"]) == 9000.5
+
+
 def test_worker_auto_resumes_only_safe_paused_reasons() -> None:
     transport = FakeTransport([
         (200, [

@@ -118,6 +118,71 @@ export interface ProgressSyncResult {
   progress: CloudProgress;
 }
 
+export type GenerationTaskStatus =
+  | "QUEUED"
+  | "LEASED"
+  | "GENERATING"
+  | "ENCODING"
+  | "UPLOADING"
+  | "READY"
+  | "PAUSED"
+  | "FAILED_RETRYABLE"
+  | "FAILED_FINAL"
+  | "CANCELLED";
+
+export interface GenerationTaskSummary {
+  task_id: string;
+  book_id: string;
+  chapter_id?: string;
+  book_title?: string;
+  chapter_title?: string;
+  status: GenerationTaskStatus;
+  priority: number;
+  pause_reason?: string | null;
+  start_segment_id?: string;
+  voice_version?: string;
+  chunk_order?: number;
+  estimated_seconds?: number;
+  deletion_generation?: number;
+}
+
+export type GenerationQueueStatus =
+  | "GENERATING"
+  | "QUEUED"
+  | "PAUSED"
+  | "FAILED"
+  | "COMPLETED"
+  | "REMOVED";
+
+export interface GenerationQueueItem {
+  queue_id: string;
+  book_id: string;
+  chapter_id: string;
+  book_title: string;
+  chapter_title: string;
+  status: GenerationQueueStatus;
+  priority: number;
+  task_ids: string[];
+  total_chunks: number;
+  ready_chunks: number;
+  pending_chunks: number;
+  estimated_seconds: number;
+}
+
+export interface VoiceGenerationProfile {
+  voice_version: string;
+  confirmed: boolean;
+}
+
+const ACTIVE_GENERATION_STATUSES = new Set<GenerationTaskStatus>([
+  "LEASED",
+  "GENERATING",
+  "ENCODING",
+  "UPLOADING",
+]);
+const MANUAL_QUEUE_PRIORITY_START = 1_000_000;
+const MANUAL_QUEUE_PRIORITY_STEP = 10_000;
+
 function requireServices() {
   if (cloudSyncIsPaused()) {
     const error = new Error(cloudSyncPauseMessage()) as Error & { code?: string };
@@ -413,83 +478,148 @@ export async function saveBookmark(
   return bookmarkId;
 }
 
-function timestampMillis(value: unknown): number | null {
-  if (!value || typeof value !== "object" || !("toMillis" in value)) return null;
-  const toMillis = (value as { toMillis?: unknown }).toMillis;
-  return typeof toMillis === "function" ? Number(toMillis.call(value)) : null;
+export async function saveVoiceGenerationProfile(
+  ownerUid: string,
+  voiceVersion: string,
+): Promise<void> {
+  if (!voiceVersion) return;
+  const { db } = requireServices();
+  await setDoc(doc(db, `users/${ownerUid}/voiceSettings/current`), {
+    owner_uid: ownerUid,
+    setting_id: "current",
+    voice_version: voiceVersion,
+    confirmed: true,
+    updated_at: serverTimestamp(),
+  }, { merge: true });
+  recordEstimatedUsage({ writes: 1 });
 }
 
-export interface GenerationTaskSummary {
-  book_id?: string;
-  status?: string;
-  priority?: number;
-  pause_reason?: string | null;
+export async function loadVoiceGenerationProfile(
+  ownerUid: string,
+): Promise<VoiceGenerationProfile | null> {
+  const { db } = requireServices();
+  const snapshot = await getDoc(doc(db, `users/${ownerUid}/voiceSettings/current`));
+  recordEstimatedUsage({ reads: 1 });
+  if (!snapshot.exists()) return null;
+  const value = snapshot.data() as VoiceGenerationProfile;
+  return value.confirmed && value.voice_version ? value : null;
 }
 
-export function generationTaskUpdate(
+export function watchGenerationTasks(
+  ownerUid: string,
+  onTasks: (tasks: GenerationTaskSummary[]) => void,
+  onError: (error: SyncError) => void,
+): Unsubscribe {
+  const { db } = requireServices();
+  return onSnapshot(collection(db, `users/${ownerUid}/generationRequests`), (snapshot) => {
+    recordEstimatedUsage({ reads: snapshot.size });
+    onTasks(snapshot.docs.map((item) => ({
+      ...(item.data() as Omit<GenerationTaskSummary, "task_id">),
+      task_id: String(item.data().task_id || item.id),
+    })));
+  }, (error) => onError(classifyFirebaseError(error)));
+}
+
+function chapterForTask(
   task: GenerationTaskSummary,
-  activeBookId: string,
-  inactiveBookIds: ReadonlySet<string>,
-): Record<string, unknown> | null {
-  if (task.book_id === activeBookId) {
-    if (task.status === "PAUSED" && task.pause_reason === "INACTIVE_48_HOURS") {
-      return { status: "QUEUED", pause_reason: null, priority: 300 };
-    }
-    if (task.status === "FAILED_RETRYABLE") {
-      return { status: "QUEUED", pause_reason: null, priority: 300 };
-    }
-    if (task.status === "QUEUED" && task.priority !== 300) return { priority: 300 };
-    return null;
-  }
-  if (
-    task.book_id
-    && inactiveBookIds.has(task.book_id)
-    && (task.status === "QUEUED" || task.status === "FAILED_RETRYABLE")
-  ) {
-    return { status: "PAUSED", pause_reason: "INACTIVE_48_HOURS", priority: 100 };
-  }
-  if (task.status === "QUEUED" && task.priority !== 100) return { priority: 100 };
-  return null;
+  books: readonly ParsedBook[],
+): { chapter_id: string; book_title: string; chapter_title: string } {
+  const book = books.find((item) => item.book_id === task.book_id);
+  const chapter = book?.chapters.find((item) => (
+    item.chapter_id === task.chapter_id
+    || item.segments.some((segment) => segment.segment_id === task.start_segment_id)
+  ));
+  return {
+    chapter_id: task.chapter_id || chapter?.chapter_id || "unknown",
+    book_title: task.book_title || book?.title || "未载入的书",
+    chapter_title: task.chapter_title || chapter?.title || "旧版待生成任务",
+  };
 }
 
-export async function prioritizeActiveBook(
+function queueStatus(tasks: readonly GenerationTaskSummary[]): GenerationQueueStatus {
+  if (tasks.some((task) => ACTIVE_GENERATION_STATUSES.has(task.status))) return "GENERATING";
+  if (tasks.some((task) => task.status === "FAILED_RETRYABLE" || task.status === "FAILED_FINAL")) {
+    return "FAILED";
+  }
+  if (tasks.some((task) => task.status === "QUEUED")) return "QUEUED";
+  if (tasks.some((task) => task.status === "PAUSED")) return "PAUSED";
+  if (tasks.every((task) => task.status === "READY")) return "COMPLETED";
+  return "REMOVED";
+}
+
+export function buildGenerationQueue(
+  tasks: readonly GenerationTaskSummary[],
+  books: readonly ParsedBook[],
+): GenerationQueueItem[] {
+  const groups = new Map<string, {
+    book_id: string;
+    chapter_id: string;
+    book_title: string;
+    chapter_title: string;
+    tasks: GenerationTaskSummary[];
+  }>();
+  for (const task of tasks) {
+    if (!task.book_id) continue;
+    const chapter = chapterForTask(task, books);
+    const queueId = `${task.book_id}:${chapter.chapter_id}`;
+    const current = groups.get(queueId) || {
+      book_id: task.book_id,
+      chapter_id: chapter.chapter_id,
+      book_title: chapter.book_title,
+      chapter_title: chapter.chapter_title,
+      tasks: [],
+    };
+    current.tasks.push(task);
+    groups.set(queueId, current);
+  }
+  return [...groups.entries()]
+    .map(([queueId, group]): GenerationQueueItem => {
+      const ordered = [...group.tasks].sort((left, right) => (
+        Number(left.chunk_order || 0) - Number(right.chunk_order || 0)
+        || left.task_id.localeCompare(right.task_id)
+      ));
+      const ready = ordered.filter((task) => task.status === "READY").length;
+      const pending = ordered.filter((task) => (
+        task.status !== "READY" && task.status !== "CANCELLED"
+      )).length;
+      return {
+        queue_id: queueId,
+        book_id: group.book_id,
+        chapter_id: group.chapter_id,
+        book_title: group.book_title,
+        chapter_title: group.chapter_title,
+        status: queueStatus(ordered),
+        priority: Math.max(...ordered.map((task) => Number(task.priority || 0))),
+        task_ids: ordered.map((task) => task.task_id),
+        total_chunks: ordered.length,
+        ready_chunks: ready,
+        pending_chunks: pending,
+        estimated_seconds: ordered.reduce(
+          (total, task) => total + Number(task.estimated_seconds || 0),
+          0,
+        ),
+      };
+    })
+    .sort((left, right) => {
+      if (left.status === "GENERATING" && right.status !== "GENERATING") return -1;
+      if (right.status === "GENERATING" && left.status !== "GENERATING") return 1;
+      const leftDone = left.status === "COMPLETED" || left.status === "REMOVED";
+      const rightDone = right.status === "COMPLETED" || right.status === "REMOVED";
+      if (leftDone !== rightDone) return leftDone ? 1 : -1;
+      return right.priority - left.priority || left.queue_id.localeCompare(right.queue_id);
+    });
+}
+
+export async function markBookListened(
   ownerUid: string,
   activeBookId: string,
-  books: CloudBookSummary[],
 ): Promise<void> {
   const { db } = requireServices();
   await setDoc(doc(db, `users/${ownerUid}/books/${activeBookId}`), {
     last_listened_at: serverTimestamp(),
     updated_at: serverTimestamp(),
   }, { merge: true });
-  const inactiveBookIds = new Set(
-    books
-      .filter((book) => {
-        const lastListened = timestampMillis(book.last_listened_at);
-        return book.book_id !== activeBookId
-          && lastListened !== null
-          && lastListened < Date.now() - 48 * 60 * 60 * 1000;
-      })
-      .map((book) => book.book_id),
-  );
-  const snapshot = await getDocs(collection(db, `users/${ownerUid}/generationRequests`));
-  const updates: Array<{ reference: ReturnType<typeof doc>; value: Record<string, unknown> }> = [];
-  for (const item of snapshot.docs) {
-    const value = generationTaskUpdate(
-      item.data() as GenerationTaskSummary,
-      activeBookId,
-      inactiveBookIds,
-    );
-    if (value) updates.push({ reference: item.ref, value: { ...value, updated_at: serverTimestamp() } });
-  }
-  for (let offset = 0; offset < updates.length; offset += 400) {
-    const batch = writeBatch(db);
-    for (const update of updates.slice(offset, offset + 400)) {
-      batch.update(update.reference, update.value);
-    }
-    await batch.commit();
-  }
-  recordEstimatedUsage({ reads: snapshot.size, writes: updates.length + 1 });
+  recordEstimatedUsage({ writes: 1 });
 }
 
 export async function requestAudioRepair(ownerUid: string, chunk: AudioChunk): Promise<void> {
@@ -643,6 +773,11 @@ export interface PlannedRequest {
   startSegmentId: string;
   priority: number;
   estimatedSeconds: number;
+  bookId: string;
+  bookTitle: string;
+  chapterId: string;
+  chapterTitle: string;
+  chunkOrder: number;
 }
 
 export function planGenerationRequests(book: ParsedBook, voiceVersion: string): PlannedRequest[] {
@@ -650,6 +785,7 @@ export function planGenerationRequests(book: ParsedBook, voiceVersion: string): 
   for (const chapter of book.chapters) {
     let chunkSeconds = 0;
     let chunkStart = "";
+    let chunkOrder = 0;
     for (const segment of chapter.segments) {
       if (!segment.spoken_text) continue;
       const seconds = segment.spoken_text.replace(/\s/g, "").length / 4.2;
@@ -661,7 +797,13 @@ export function planGenerationRequests(book: ParsedBook, voiceVersion: string): 
           startSegmentId: chunkStart,
           priority: requests.length ? 100 : 300,
           estimatedSeconds: chunkSeconds,
+          bookId: book.book_id,
+          bookTitle: book.title,
+          chapterId: chapter.chapter_id,
+          chapterTitle: chapter.title,
+          chunkOrder,
         });
+        chunkOrder += 1;
         chunkStart = segment.segment_id;
         chunkSeconds = 0;
       }
@@ -674,68 +816,230 @@ export function planGenerationRequests(book: ParsedBook, voiceVersion: string): 
         startSegmentId: chunkStart,
         priority: requests.length ? 100 : 300,
         estimatedSeconds: chunkSeconds,
+        bookId: book.book_id,
+        bookTitle: book.title,
+        chapterId: chapter.chapter_id,
+        chapterTitle: chapter.title,
+        chunkOrder,
       });
     }
   }
   return requests;
 }
 
-export function selectNextFiveHours(
-  requests: PlannedRequest[],
-  existingTaskIds: ReadonlySet<string>,
-): PlannedRequest[] {
-  const selected: PlannedRequest[] = [];
-  let selectedSeconds = 0;
-  for (const request of requests) {
-    if (existingTaskIds.has(request.taskId)) continue;
-    selected.push(request);
-    selectedSeconds += request.estimatedSeconds;
-    if (selectedSeconds >= 18_000) break;
-  }
-  return selected;
+export interface ChapterGenerationSelection {
+  book: ParsedBook;
+  chapter_ids: string[];
 }
 
-export async function requestFiveHourGeneration(
+export interface EnqueueGenerationResult {
+  chapters: number;
+  created: number;
+  resumed: number;
+  unchanged: number;
+}
+
+function taskPayload(
   ownerUid: string,
-  book: ParsedBook,
+  request: PlannedRequest,
   voiceVersion: string,
-): Promise<number> {
-  if (!voiceVersion) throw new Error("请先设置并确认你的声音。");
+  storageMode: "PUBLIC_GITHUB" | "PRIVATE_FIRESTORE",
+  priority: number,
+) {
+  return {
+    owner_uid: ownerUid,
+    task_id: request.taskId,
+    book_id: request.bookId,
+    book_title: request.bookTitle,
+    chapter_id: request.chapterId,
+    chapter_title: request.chapterTitle,
+    chunk_order: request.chunkOrder,
+    estimated_seconds: request.estimatedSeconds,
+    status: "QUEUED",
+    priority,
+    attempt_id: 0,
+    deletion_generation: 0,
+    start_segment_id: request.startSegmentId,
+    target_seconds: 600,
+    chunk_seconds: 600,
+    voice_version: voiceVersion,
+    storage_mode: storageMode,
+    created_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+  };
+}
+
+export async function enqueueGenerationChapters(
+  ownerUid: string,
+  selections: readonly ChapterGenerationSelection[],
+  voiceVersion: string,
+): Promise<EnqueueGenerationResult> {
+  if (!voiceVersion) throw new Error("请先在 Mac 设置并确认你的声音。");
+  const selected = selections.flatMap(({ book, chapter_ids: chapterIds }) => {
+    const selectedIds = new Set(chapterIds);
+    return planGenerationRequests(book, voiceVersion)
+      .filter((request) => selectedIds.has(request.chapterId))
+      .map((request) => ({
+        request,
+        storageMode: book.publication_mode === "LOCAL_ONLY"
+          ? "PRIVATE_FIRESTORE" as const
+          : "PUBLIC_GITHUB" as const,
+      }));
+  });
+  const chapterIds = new Set(selected.map(({ request }) => (
+    `${request.bookId}:${request.chapterId}`
+  )));
+  if (!selected.length) throw new Error("请至少选择一个有正文的章节。");
+
   const { db } = requireServices();
-  const requests = planGenerationRequests(book, voiceVersion);
   const taskCollection = collection(db, `users/${ownerUid}/generationRequests`);
   const existingSnapshot = await getDocs(taskCollection);
-  const existingTaskIds = new Set(existingSnapshot.docs.map((item) => item.id));
-  const missing = selectNextFiveHours(requests, existingTaskIds);
   recordEstimatedUsage({ reads: existingSnapshot.size });
+  const existing = new Map(existingSnapshot.docs.map((item) => [
+    item.id,
+    item.data() as GenerationTaskSummary,
+  ]));
+  const activePriorities = existingSnapshot.docs
+    .map((item) => item.data() as GenerationTaskSummary)
+    .filter((task) => (
+      task.status !== "READY"
+      && task.status !== "CANCELLED"
+      && !chapterIds.has(`${task.book_id}:${task.chapter_id || ""}`)
+    ))
+    .map((task) => Number(task.priority || 0));
+  const appendPriority = activePriorities.length
+    ? Math.min(...activePriorities) - MANUAL_QUEUE_PRIORITY_STEP
+    : MANUAL_QUEUE_PRIORITY_START;
+  const chapterRanks = new Map<string, number>();
   let created = 0;
-  for (const request of missing) {
+  let resumed = 0;
+  let unchanged = 0;
+
+  for (const { request, storageMode } of selected) {
+    const chapterKey = `${request.bookId}:${request.chapterId}`;
+    if (!chapterRanks.has(chapterKey)) chapterRanks.set(chapterKey, chapterRanks.size);
+    const priority = appendPriority
+      - Number(chapterRanks.get(chapterKey)) * MANUAL_QUEUE_PRIORITY_STEP
+      - request.chunkOrder;
     const reference = doc(taskCollection, request.taskId);
-    const wasCreated = await runTransaction(db, async (transaction) => {
-      const current = await transaction.get(reference);
-      if (current.exists()) return false;
-      transaction.set(reference, {
-        owner_uid: ownerUid,
-        task_id: request.taskId,
-        book_id: book.book_id,
+    const previous = existing.get(request.taskId);
+    if (!previous) {
+      const wasCreated = await runTransaction(db, async (transaction) => {
+        const current = await transaction.get(reference);
+        if (current.exists()) return false;
+        transaction.set(reference, taskPayload(
+          ownerUid,
+          request,
+          voiceVersion,
+          storageMode,
+          priority,
+        ));
+        return true;
+      });
+      if (wasCreated) created += 1;
+      else unchanged += 1;
+      continue;
+    }
+    if (["PAUSED", "FAILED_RETRYABLE", "FAILED_FINAL", "CANCELLED"].includes(previous.status)) {
+      await setDoc(reference, {
         status: "QUEUED",
-        priority: request.priority,
-        attempt_id: 0,
-        deletion_generation: 0,
-        start_segment_id: request.startSegmentId,
-        target_seconds: 600,
-        chunk_seconds: 600,
-        voice_version: voiceVersion,
-        storage_mode: book.publication_mode === "LOCAL_ONLY"
-          ? "PRIVATE_FIRESTORE"
-          : "PUBLIC_GITHUB",
-        created_at: serverTimestamp(),
+        pause_reason: null,
+        retry_not_before: null,
+        priority,
+        updated_at: serverTimestamp(),
+      }, { merge: true });
+      resumed += 1;
+      continue;
+    }
+    unchanged += 1;
+  }
+  recordEstimatedUsage({ reads: selected.length, writes: created + resumed });
+  return { chapters: chapterIds.size, created, resumed, unchanged };
+}
+
+export type GenerationQueueAction = "PAUSE" | "RESUME" | "REMOVE";
+
+export async function updateGenerationQueueItem(
+  ownerUid: string,
+  taskIds: readonly string[],
+  action: GenerationQueueAction,
+): Promise<number> {
+  const { db } = requireServices();
+  let updated = 0;
+  for (const taskId of taskIds) {
+    const reference = doc(db, `users/${ownerUid}/generationRequests/${taskId}`);
+    const changed = await runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(reference);
+      if (!snapshot.exists()) return false;
+      const task = snapshot.data() as GenerationTaskSummary;
+      if (task.status === "READY" || ACTIVE_GENERATION_STATUSES.has(task.status)) return false;
+      if (action === "PAUSE") {
+        if (!["QUEUED", "FAILED_RETRYABLE", "FAILED_FINAL"].includes(task.status)) return false;
+        transaction.update(reference, {
+          status: "PAUSED",
+          pause_reason: "USER_PAUSED",
+          retry_not_before: null,
+          updated_at: serverTimestamp(),
+        });
+        return true;
+      }
+      if (action === "RESUME") {
+        if (!["PAUSED", "FAILED_RETRYABLE", "FAILED_FINAL", "CANCELLED"].includes(task.status)) {
+          return false;
+        }
+        transaction.update(reference, {
+          status: "QUEUED",
+          pause_reason: null,
+          retry_not_before: null,
+          updated_at: serverTimestamp(),
+        });
+        return true;
+      }
+      if (!["QUEUED", "PAUSED", "FAILED_RETRYABLE", "FAILED_FINAL"].includes(task.status)) {
+        return false;
+      }
+      transaction.update(reference, {
+        status: "CANCELLED",
+        pause_reason: null,
+        retry_not_before: null,
         updated_at: serverTimestamp(),
       });
       return true;
     });
-    if (wasCreated) created += 1;
+    if (changed) updated += 1;
   }
-  recordEstimatedUsage({ reads: missing.length, writes: created });
-  return created;
+  recordEstimatedUsage({ reads: taskIds.length, writes: updated });
+  return updated;
+}
+
+export async function reorderGenerationQueue(
+  ownerUid: string,
+  orderedItems: readonly Pick<GenerationQueueItem, "task_ids">[],
+): Promise<void> {
+  const { db } = requireServices();
+  let reads = 0;
+  let writes = 0;
+  for (let rank = 0; rank < orderedItems.length; rank += 1) {
+    const item = orderedItems[rank];
+    for (let chunkOrder = 0; chunkOrder < item.task_ids.length; chunkOrder += 1) {
+      const taskId = item.task_ids[chunkOrder];
+      const reference = doc(db, `users/${ownerUid}/generationRequests/${taskId}`);
+      const changed = await runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(reference);
+        if (!snapshot.exists()) return false;
+        const task = snapshot.data() as GenerationTaskSummary;
+        if (task.status !== "QUEUED" && task.status !== "PAUSED") return false;
+        transaction.update(reference, {
+          priority: MANUAL_QUEUE_PRIORITY_START
+            - rank * MANUAL_QUEUE_PRIORITY_STEP
+            - chunkOrder,
+          updated_at: serverTimestamp(),
+        });
+        return true;
+      });
+      reads += 1;
+      if (changed) writes += 1;
+    }
+  }
+  recordEstimatedUsage({ reads, writes });
 }

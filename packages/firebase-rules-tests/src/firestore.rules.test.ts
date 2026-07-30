@@ -87,6 +87,34 @@ describe("owner isolation", () => {
   });
 });
 
+describe("voice generation metadata", () => {
+  it("syncs only a non-secret voice version to the owner account", async () => {
+    const path = "users/owner-a/voiceSettings/current";
+    const reference = doc(ownerDb(), path);
+    await assertSucceeds(setDoc(reference, {
+      owner_uid: "owner-a",
+      setting_id: "current",
+      voice_version: "voice-version-a",
+      confirmed: true,
+      updated_at: serverTimestamp(),
+    }));
+    await assertSucceeds(getDoc(reference));
+    await assertFails(getDoc(doc(ownerDb("owner-b"), path)));
+    await assertFails(updateDoc(reference, {
+      local_voice_path: "/Users/private/voice.flac",
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(setDoc(doc(ownerDb(), "users/owner-a/voiceSettings/leaked"), {
+      owner_uid: "owner-a",
+      setting_id: "leaked",
+      voice_version: "voice-version-a",
+      confirmed: true,
+      voice_sample: Bytes.fromUint8Array(new Uint8Array([1, 2, 3])),
+      updated_at: serverTimestamp(),
+    }));
+  });
+});
+
 describe("optimistic progress", () => {
   it("keeps a two-device bookshelf in sync without allowing stale progress", async () => {
     const deviceA = ownerDb();

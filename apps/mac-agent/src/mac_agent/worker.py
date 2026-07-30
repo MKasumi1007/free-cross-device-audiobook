@@ -82,6 +82,9 @@ class RenewingFence:
 
 
 class MacGenerationWorker:
+    MAX_READY_AUDIO_SECONDS = 5 * 60 * 60
+    CAPACITY_CHECK_SECONDS = 5 * 60
+
     def __init__(
         self,
         *,
@@ -111,6 +114,8 @@ class MacGenerationWorker:
         self._last_cleanup = float("-inf")
         self._last_retention = float("-inf")
         self._last_reconciliation = float("-inf")
+        self._ready_audio_seconds: float | None = None
+        self._last_capacity_check = float("-inf")
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -122,8 +127,7 @@ class MacGenerationWorker:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=5)
-        if self._generator:
-            self._generator.unload()
+        self._unload_generator()
 
     def run_forever(self) -> None:
         while not self._stop.is_set():
@@ -158,11 +162,17 @@ class MacGenerationWorker:
             return self._process_deletion(deletion)
         task = self.tasks.next_task(owner_uid)
         if task is None:
+            self._unload_generator()
             if self._sync_private_book_texts(owner_uid):
                 return True
             return self._maybe_reconcile(owner_uid)
+        if self._audio_cache_is_full(owner_uid):
+            self._unload_generator()
+            self.last_state = "WAITING_FOR_CACHE_SPACE"
+            return False
         profile = self.voices.load()
         if profile is None or not profile.confirmed:
+            self._unload_generator()
             self.last_state = "WAITING_FOR_VOICE"
             return False
         if task.status == "PAUSED":
@@ -227,6 +237,8 @@ class MacGenerationWorker:
             )
             published = pipeline.run(job)
             self.tasks.record_ready(fence.task, job, published)
+            if self._ready_audio_seconds is not None:
+                self._ready_audio_seconds += published.duration_seconds
             fence.state("READY")
             self.last_state = "READY"
             return True
@@ -286,6 +298,7 @@ class MacGenerationWorker:
                         claimed.timeline_url,
                     )
             self.tasks.complete_deletion(claimed)
+            self._ready_audio_seconds = None
             self.last_state = "AUDIO_DELETED"
             self.last_error = ""
         except GenerationError as error:
@@ -311,8 +324,23 @@ class MacGenerationWorker:
         now = time.monotonic()
         if now - self._last_retention < 60 * 60:
             return
-        self.tasks.queue_expired_audio(owner_uid, self.library.book_ids())
+        queued = self.tasks.queue_expired_audio(owner_uid, self.library.book_ids())
+        if queued:
+            self._ready_audio_seconds = None
         self._last_retention = now
+
+    def _audio_cache_is_full(self, owner_uid: str) -> bool:
+        now = time.monotonic()
+        if (
+            self._ready_audio_seconds is None
+            or now - self._last_capacity_check >= self.CAPACITY_CHECK_SECONDS
+        ):
+            self._ready_audio_seconds = self.tasks.ready_audio_seconds(
+                owner_uid,
+                self.library.book_ids(),
+            )
+            self._last_capacity_check = now
+        return self._ready_audio_seconds >= self.MAX_READY_AUDIO_SECONDS
 
     def _maybe_reconcile(self, owner_uid: str) -> bool:
         now = time.monotonic()
@@ -359,6 +387,13 @@ class MacGenerationWorker:
             self._generator = self.generator_factory(profile)
             self._voice_version = profile.voice_version
         return self._generator
+
+    def _unload_generator(self) -> None:
+        generator = self._generator
+        self._generator = None
+        self._voice_version = ""
+        if generator:
+            generator.unload()
 
     def _sync_private_book_texts(self, owner_uid: str) -> bool:
         for book_id in self.library.book_ids():

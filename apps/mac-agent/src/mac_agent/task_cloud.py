@@ -629,6 +629,14 @@ class FirestoreWorkerTasks:
             ))
         return records
 
+    def ready_audio_seconds(self, owner_uid: str, book_ids: list[str]) -> float:
+        total = 0.0
+        for document in self._query_audio_documents(owner_uid, book_ids):
+            fields = self._fields(document)
+            if fields.get("status") == "READY":
+                total += max(0.0, float(fields.get("duration_seconds") or 0))
+        return total
+
     def _queue_retention_deletion(
         self,
         owner_uid: str,

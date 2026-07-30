@@ -15,25 +15,29 @@ import {
 } from "./agent";
 import { signInWithGoogle, signOutCurrentUser, watchAuth } from "./auth";
 import {
+  loadVoiceGenerationProfile,
   loadCloudProgress,
   loadRemoteBook,
-  prioritizeActiveBook,
+  markBookListened,
   requestAudioRepair,
-  requestFiveHourGeneration,
   saveBookmark,
   saveProgressOptimistically,
+  saveVoiceGenerationProfile,
   syncBookMetadata,
   watchAudioChunks,
   watchBookmarks,
   watchCloudBooks,
+  watchGenerationTasks,
   type AudioChunk,
   type CloudBookmark,
   type CloudBookSummary,
+  type GenerationTaskSummary,
   type ProgressInput,
 } from "./cloud";
 import { registerCurrentDevice } from "./device";
 import { classifyFirebaseError, type SyncError } from "./firebase-errors";
 import { firebaseIsConfigured } from "./firebase";
+import { GenerationQueue } from "./GenerationQueue";
 import {
   pairMacAgent,
   revokeMacAgent,
@@ -153,6 +157,7 @@ export function App() {
   const [showDisconnectMac, setShowDisconnectMac] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
   const [showAudioManager, setShowAudioManager] = useState(false);
+  const [showGenerationQueue, setShowGenerationQueue] = useState(false);
   const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
@@ -160,6 +165,8 @@ export function App() {
   const [pairingCode, setPairingCode] = useState("");
   const [workerLinks, setWorkerLinks] = useState<WorkerLink[]>([]);
   const [audioChunks, setAudioChunks] = useState<AudioChunk[]>([]);
+  const [generationTasks, setGenerationTasks] = useState<GenerationTaskSummary[]>([]);
+  const [cloudVoiceVersion, setCloudVoiceVersion] = useState("");
   const [bookmarks, setBookmarks] = useState<CloudBookmark[]>([]);
   const [resumeProgress, setResumeProgress] = useState<LocalProgress | null>(null);
   const [jumpRequest, setJumpRequest] = useState<PlayerJumpRequest | null>(null);
@@ -170,7 +177,6 @@ export function App() {
   const [cloudSyncPaused, setCloudSyncPaused] = useState(() => cloudSyncIsPaused());
   const progressQueues = useRef(new Map<string, Promise<void>>());
   const currentProgress = useRef<LocalProgress | null>(null);
-  const cloudBooksRef = useRef<CloudBookSummary[]>([]);
   const jumpSequence = useRef(0);
   const firebaseConfigured = firebaseIsConfigured();
 
@@ -255,6 +261,25 @@ export function App() {
   }, [cloudSyncPaused, pageVisible, user]);
 
   useEffect(() => {
+    if (!user || !pageVisible || cloudSyncPaused) {
+      setGenerationTasks([]);
+      if (!user) setCloudVoiceVersion("");
+      return;
+    }
+    let active = true;
+    void loadVoiceGenerationProfile(user.uid)
+      .then((profile) => {
+        if (active && profile?.confirmed) setCloudVoiceVersion(profile.voice_version);
+      })
+      .catch((error) => handleSyncError(classifyFirebaseError(error)));
+    const stopTasks = watchGenerationTasks(user.uid, setGenerationTasks, handleSyncError);
+    return () => {
+      active = false;
+      stopTasks();
+    };
+  }, [cloudSyncPaused, pageVisible, user]);
+
+  useEffect(() => {
     if (!canAdd) return;
     let active = true;
     let timer = 0;
@@ -276,6 +301,13 @@ export function App() {
       window.clearTimeout(timer);
     };
   }, [canAdd, showVoice, voiceStatus?.preview.state]);
+
+  useEffect(() => {
+    if (!user || !voiceStatus?.confirmed || !voiceStatus.voice_version || cloudSyncPaused) return;
+    setCloudVoiceVersion(voiceStatus.voice_version);
+    void saveVoiceGenerationProfile(user.uid, voiceStatus.voice_version)
+      .catch((error) => handleSyncError(classifyFirebaseError(error)));
+  }, [cloudSyncPaused, user, voiceStatus?.confirmed, voiceStatus?.voice_version]);
 
   useEffect(() => {
     let active = true;
@@ -304,10 +336,9 @@ export function App() {
     ?? selectedBook?.chapters[0];
   const activeMac = workerLinks.find((link) => !link.revoked_at);
   const macOnline = E2E_PLAYER_MODE || workerIsOnline(activeMac);
-
-  useEffect(() => {
-    cloudBooksRef.current = cloudBooks;
-  }, [cloudBooks]);
+  const effectiveVoiceVersion = voiceStatus?.confirmed && voiceStatus.voice_version
+    ? voiceStatus.voice_version
+    : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";
 
   useEffect(() => {
     if (E2E_PLAYER_MODE && selectedBook) {
@@ -340,13 +371,8 @@ export function App() {
 
   useEffect(() => {
     if (!user || !selectedBook || cloudSyncPaused || selectedBook.book_id === DEMO_BOOK_ID) return;
-    const refreshPriority = () => {
-      void prioritizeActiveBook(user.uid, selectedBook.book_id, cloudBooksRef.current)
-        .catch((error) => setNotice(classifyFirebaseError(error).message));
-    };
-    refreshPriority();
-    const timer = window.setInterval(refreshPriority, 6 * 60 * 60 * 1000);
-    return () => window.clearInterval(timer);
+    void markBookListened(user.uid, selectedBook.book_id)
+      .catch((error) => setNotice(classifyFirebaseError(error).message));
   }, [cloudSyncPaused, selectedBook, user]);
 
   useEffect(() => {
@@ -604,30 +630,16 @@ export function App() {
     if (!voiceStatus?.voice_version) return;
     setBusy(true);
     try {
-      setVoiceStatus(await confirmVoice(voiceStatus.voice_version));
+      const confirmed = await confirmVoice(voiceStatus.voice_version);
+      setVoiceStatus(confirmed);
+      if (user) {
+        await saveVoiceGenerationProfile(user.uid, voiceStatus.voice_version);
+        setCloudVoiceVersion(voiceStatus.voice_version);
+      }
       setShowVoice(false);
       setNotice("声音已确认，以后的书会自动复用这个声音和语气。");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "声音确认没有完成。");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function generateFiveHours() {
-    if (!user || !selectedBook || !voiceStatus?.voice_version || !voiceStatus.confirmed) {
-      setShowVoice(true);
-      setNotice("请先设置并确认你的声音。");
-      return;
-    }
-    setBusy(true);
-    try {
-      const count = await requestFiveHourGeneration(user.uid, selectedBook, voiceStatus.voice_version);
-      setNotice(count
-        ? `已安排 ${count} 个音频块，第一块完成后就能开始听。`
-        : "这批音频已经安排过，不会重复生成。");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "生成任务没有创建成功。");
     } finally {
       setBusy(false);
     }
@@ -724,6 +736,7 @@ export function App() {
           {user && canAdd && !activeMac && <button className="quiet-button header-button" onClick={() => void connectMacAutomatically()}>连接这台 Mac</button>}
           {user && canAdd && activeMac && <button className="quiet-button header-button is-connected" onClick={() => setShowDisconnectMac(true)}>Mac 已连接</button>}
           {canAdd && <button className="quiet-button header-button" onClick={() => setShowVoice(true)}>{voiceStatus?.confirmed ? "声音已设置" : "我的声音"}</button>}
+          {user && <button className="quiet-button header-button queue-header-button" onClick={() => setShowGenerationQueue(true)}>待生成 {generationTasks.filter((task) => !["READY", "CANCELLED"].includes(task.status)).length || ""}</button>}
           {(user || E2E_PLAYER_MODE) && <button className="quiet-button header-button" onClick={() => setShowAudioManager(true)}>音频空间</button>}
           <button className="quiet-button header-button" onClick={() => setShowSystemStatus(true)}>系统状态</button>
           {user && <button className="account-button" onClick={() => void signOutCurrentUser()} title="点击退出登录">{user.photoURL ? <img src={user.photoURL} alt="" /> : "我"}</button>}
@@ -746,6 +759,11 @@ export function App() {
           </section>
           {!canAdd && <p className="mobile-add-hint">请在 Mac 上添加新书</p>}
           <button className="shelf-status-button" onClick={() => setShowSystemStatus(true)}>检查系统状态</button>
+          {user && (
+            <button className="shelf-queue-button" onClick={() => setShowGenerationQueue(true)}>
+              选择待生成章节
+            </button>
+          )}
           {(user || E2E_PLAYER_MODE) && (
             <button className="shelf-audio-button" onClick={() => setShowAudioManager(true)}>
               管理已生成音频
@@ -791,16 +809,16 @@ export function App() {
             <div className="rights-badge">
               {selectedBook.publication_mode === "LOCAL_ONLY" ? "仅你的登录账号可访问" : "已确认可公开"}
             </div>
-            {canAdd ? (
+            {user ? (
               <button
                 className="generate-audio-button"
-                onClick={() => void generateFiveHours()}
-                disabled={busy || !user || !activeMac}
+                onClick={() => setShowGenerationQueue(true)}
+                disabled={busy}
               >
-                {selectedBook.publication_mode === "LOCAL_ONLY" ? "私密生成约 5 小时音频" : "生成约 5 小时音频"}
+                选择要生成的章节
               </button>
             ) : (
-              <p className="mobile-generation-hint">请在 Mac 上生成音频，已生成的内容可以直接播放。</p>
+              <p className="mobile-generation-hint">登录后可以选择章节，并安排生成顺序。</p>
             )}
             {(user || E2E_PLAYER_MODE) && (
               <button className="manage-audio-button" onClick={() => setShowAudioManager(true)}>
@@ -986,6 +1004,24 @@ export function App() {
           initialChunks={E2E_PLAYER_MODE ? books.flatMap(e2eAudioChunks) : undefined}
           onClose={() => setShowAudioManager(false)}
           onNotice={setNotice}
+        />
+      )}
+
+      {showGenerationQueue && user && (
+        <GenerationQueue
+          ownerUid={user.uid}
+          books={books}
+          tasks={generationTasks}
+          voiceVersion={effectiveVoiceVersion}
+          initialBookId={selectedBook?.book_id}
+          initialChapterId={selectedChapter?.chapter_id}
+          macOnline={macOnline}
+          onClose={() => setShowGenerationQueue(false)}
+          onNotice={setNotice}
+          onOpenAudioManager={() => {
+            setShowGenerationQueue(false);
+            setShowAudioManager(true);
+          }}
         />
       )}
 

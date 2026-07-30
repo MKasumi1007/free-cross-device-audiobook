@@ -59,8 +59,8 @@ test("restores a deliberately selected reading position after reload", async ({ 
 test("uses the correct responsive controls", async ({ page }, testInfo) => {
   await expect(page.getByLabel("听书播放器")).toBeVisible();
   if (testInfo.project.name === "mobile-chrome") {
-    await expect(page.getByRole("button", { name: /生成约 5 小时音频/ })).toHaveCount(0);
-    await expect(page.getByText("请在 Mac 上生成音频，已生成的内容可以直接播放。")).toBeVisible();
+    await expect(page.getByRole("button", { name: "选择要生成的章节" })).toHaveCount(0);
+    await expect(page.getByText("登录后可以选择章节，并安排生成顺序。")).toBeVisible();
     await page.getByLabel("返回书架").click();
     await expect(page.getByRole("button", { name: "登录同步" })).toBeVisible();
     await expect(page.getByText("请在 Mac 上添加新书")).toBeVisible();

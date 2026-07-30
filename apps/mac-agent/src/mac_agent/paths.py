@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 APP_NAME = "听见书页"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 AGENT_PORT = 17832
 DEFAULT_QWEN_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 

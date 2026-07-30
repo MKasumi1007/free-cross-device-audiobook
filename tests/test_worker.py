@@ -37,6 +37,18 @@ class FakeLibrary:
         return self.books.get(book_id)
 
 
+class FakeCapacityTasks:
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.calls = 0
+
+    def ready_audio_seconds(self, owner_uid: str, book_ids: list[str]) -> float:
+        assert owner_uid == "owner"
+        assert book_ids == ["public"]
+        self.calls += 1
+        return self.seconds
+
+
 def test_idle_sync_only_refreshes_private_books(monkeypatch, tmp_path: Path) -> None:
     public = make_book("public", PublicationMode.PUBLIC_RIGHTS_CONFIRMED)
     private = make_book("private", PublicationMode.LOCAL_ONLY)
@@ -61,3 +73,21 @@ def test_idle_sync_only_refreshes_private_books(monkeypatch, tmp_path: Path) -> 
     assert worker._sync_private_book_texts("owner") is True
     assert synced == [("owner", "library-sync", "private")]
     assert worker._sync_private_book_texts("owner") is False
+
+
+def test_generation_waits_when_five_hour_audio_cache_is_full(tmp_path: Path) -> None:
+    public = make_book("public", PublicationMode.PUBLIC_RIGHTS_CONFIRMED)
+    tasks = FakeCapacityTasks(5 * 60 * 60)
+    worker = MacGenerationWorker(
+        tasks=tasks,  # type: ignore[arg-type]
+        library=FakeLibrary({public.book_id: public}),  # type: ignore[arg-type]
+        voices=object(),  # type: ignore[arg-type]
+        policy=object(),  # type: ignore[arg-type]
+        generator_factory=lambda _profile: object(),  # type: ignore[arg-type,return-value]
+        work_root=tmp_path,
+        repository="owner/repository",
+    )
+
+    assert worker._audio_cache_is_full("owner") is True
+    assert worker._audio_cache_is_full("owner") is True
+    assert tasks.calls == 1

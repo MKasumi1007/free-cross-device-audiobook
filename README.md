@@ -4,14 +4,15 @@
 
 在线网页：<https://mkasumi1007.github.io/free-cross-device-audiobook/>
 
-## 当前状态（0.2.0）
+## 当前状态（0.3.0）
 
 | 项目 | 证据状态 |
 | --- | --- |
 | EPUB/TXT 解析、网页、播放器、任务与删除逻辑 | 已编码；通过单元和自动化测试 |
+| 跨书章节待生成列表 | Mac 与手机可选章节、排序、暂停、继续和移除；队列云端持久化 |
 | 双击安装、独立 Agent/Qwen 环境、模型、LaunchAgent | 已在真实 Apple Silicon Mac 安装和重载验证 |
 | Qwen 模型加载、中文 WAV、FFmpeg M4A | 已在真实 Mac、MPS 和真实已确认声音上验证 |
-| 私密 Firestore Rules | 25 个 Emulator 测试通过；必要修复已真实部署 |
+| 私密 Firestore Rules | 26 个 Emulator 测试通过；必要修复已真实部署 |
 | GitHub Pages 与 Google 登录/配对 | 真实 iPhone 登录、头像和账号书架同步通过 |
 | 私密音频生成与 Firestore 上传 | 一个真实 Qwen chunk 已编码、分片、哈希校验并写为 READY |
 | 所有者网页回读与播放 | 真实 iPhone 已回读私密正文与音频，并确认用户声音 |

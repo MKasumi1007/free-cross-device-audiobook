@@ -49,7 +49,7 @@ vi.mock("./agent", () => ({
   getAgentDiagnostics: vi.fn(async () => ({
     schema_version: 1,
     checked_at: "2026-07-18T00:00:00Z",
-    agent_version: "0.2.0",
+    agent_version: "0.3.0",
     agent_port: 17832,
     data_root: "/private/application-support",
     log_path: "/private/application-support/logs/diagnostics.jsonl",
@@ -64,17 +64,26 @@ vi.mock("./agent", () => ({
 }));
 
 vi.mock("./cloud", () => ({
+  buildGenerationQueue: vi.fn(() => []),
+  enqueueGenerationChapters: vi.fn(),
   loadCloudProgress: vi.fn(async () => null),
   loadRemoteBook: vi.fn(async () => demoBook),
-  prioritizeActiveBook: vi.fn(async () => undefined),
+  loadVoiceGenerationProfile: vi.fn(async () => null),
+  markBookListened: vi.fn(async () => undefined),
+  reorderGenerationQueue: vi.fn(async () => undefined),
   requestAudioRepair: vi.fn(async () => undefined),
-  requestFiveHourGeneration: vi.fn(async () => 2),
   saveBookmark: vi.fn(async () => "bookmark-a"),
   saveProgressOptimistically: vi.fn(),
+  saveVoiceGenerationProfile: vi.fn(async () => undefined),
   syncBookMetadata: vi.fn(async () => undefined),
+  updateGenerationQueueItem: vi.fn(async () => 1),
   watchAudioChunks: vi.fn(() => () => undefined),
   watchBookmarks: vi.fn(() => () => undefined),
   watchCloudBooks: vi.fn(() => () => undefined),
+  watchGenerationTasks: vi.fn((_ownerUid: string, listener: (tasks: unknown[]) => void) => {
+    listener([]);
+    return () => undefined;
+  }),
 }));
 
 vi.mock("./device", () => ({ registerCurrentDevice: vi.fn(async () => undefined) }));
@@ -135,7 +144,7 @@ describe("书架响应式入口", () => {
     expect(await screen.findByRole("button", { name: "登录同步" })).toBeInTheDocument();
   });
 
-  it("手机端保留登录入口并隐藏本机生成操作", async () => {
+  it("手机端保留登录入口，未登录时说明登录后可以安排章节", async () => {
     setPlatform(390, "iPhone", 5);
     testState.firebaseConfigured = true;
     render(<App />);
@@ -143,8 +152,20 @@ describe("书架响应式入口", () => {
     expect(await screen.findByRole("button", { name: "登录同步" })).toHaveClass(
       "mobile-login-button",
     );
-    expect(screen.queryByRole("button", { name: /生成约 5 小时音频/ })).not.toBeInTheDocument();
-    expect(screen.getByText("请在 Mac 上生成音频，已生成的内容可以直接播放。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "选择要生成的章节" })).not.toBeInTheDocument();
+    expect(screen.getByText("登录后可以选择章节，并安排生成顺序。")).toBeInTheDocument();
+  });
+
+  it("手机登录后可以打开章节待生成列表", async () => {
+    setPlatform(390, "iPhone", 5);
+    testState.firebaseConfigured = true;
+    testState.user = { uid: "owner-a", photoURL: null };
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "选择要生成的章节" }));
+    expect(screen.getByRole("heading", { name: "待生成列表" })).toBeInTheDocument();
+    expect(screen.getByText("第一步")).toBeInTheDocument();
+    expect(screen.getByText("第二步")).toBeInTheDocument();
   });
 
   it("已配对时显示连接状态，并可确认撤销 Mac 权限", async () => {
