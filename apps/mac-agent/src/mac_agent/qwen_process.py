@@ -96,6 +96,8 @@ class QwenProcessGenerator:
             records: list[dict[str, str | int | float]] = []
             total_duration = 0.0
             sample_rate = 0
+            if on_progress:
+                on_progress(0, len(pieces), 0.0)
             for index, piece in enumerate(pieces):
                 part_path = parts_root / f"{index:04d}.wav"
                 existing = completed.get(index)
