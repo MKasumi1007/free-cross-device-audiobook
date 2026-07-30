@@ -111,12 +111,13 @@ body::before {
 .bookmark-list button { display: flex; gap: 8px; padding: 7px 4px; overflow: hidden; border: 0; background: transparent; font-size: 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .bookmark-list button span { display: grid; width: 19px; height: 19px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: #fff; background: var(--cinnabar); font: 10px/1 ui-monospace, monospace; }
 .toc-list { display: grid; gap: 7px; }
-.toc-list button { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 12px 10px; border: 0; border-left: 2px solid transparent; background: transparent; text-align: left; cursor: pointer; }
+.toc-chapter-item { border-left: 2px solid transparent; background: transparent; }
+.toc-chapter-open { display: grid; width: 100%; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 12px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .toc-chapter-number { align-self: start; padding-top: 3px; color: #9d9283; font-family: ui-monospace, monospace; font-size: 11px; }
 .toc-chapter-copy { display: grid; min-width: 0; gap: 3px; }
 .toc-chapter-copy b { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .toc-chapter-copy small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.toc-chapter-status { display: flex; max-width: 92px; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.toc-chapter-status { display: flex; max-width: 105px; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .toc-status-badge { padding: 4px 7px; border: 1px solid transparent; border-radius: 999px; font: 600 10px/1.1 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; white-space: nowrap; }
 .toc-status-badge--playable { border-color: rgba(74,116,65,.22); color: #426a3a; background: rgba(101,145,83,.13); }
 .toc-status-badge--generating { border-color: rgba(179,82,38,.2); color: #9f4429; background: rgba(207,103,54,.13); }
@@ -128,7 +129,11 @@ body::before {
 .toc-progress > span { display: block; height: 100%; border-radius: inherit; background: #c9673b; transition: width .35s ease; }
 .toc-progress--queued > span, .toc-progress--paused > span { background: #a78a59; }
 .toc-progress--failed > span { background: #b24e47; }
-.toc-list button.is-active { border-left-color: var(--cinnabar); background: rgba(255,255,255,.45); }
+.toc-chapter-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 0 10px 10px 47px; }
+.toc-action-button { padding: 5px 9px; border: 1px solid rgba(115,84,51,.18); border-radius: 8px; color: #725d43; background: rgba(255,255,255,.38); font: 600 10px/1.1 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; cursor: pointer; }
+.toc-action-button--resume { border-color: rgba(164,59,43,.2); color: #fff8ee; background: #b94b31; }
+.toc-action-button:disabled { opacity: .48; cursor: default; }
+.toc-chapter-item.is-active { border-left-color: var(--cinnabar); background: rgba(255,255,255,.45); }
 .reading-page { width: min(760px, calc(100% - 48px)); margin: 0 auto; padding: 72px 0 160px; }
 .reading-heading { margin-bottom: 54px; padding-bottom: 32px; border-bottom: 1px solid var(--line); text-align: center; }
 .reading-heading > span { color: var(--cinnabar); font-size: 12px; letter-spacing: .18em; }
@@ -364,7 +369,7 @@ body::before {
   .mobile-generation-hint { display: block; margin: 12px 0 20px; padding: 10px 12px; border-radius: 10px; color: var(--cinnabar-dark); background: rgba(164,59,43,.08); font-size: 12px; line-height: 1.55; }
   .back-link { margin-bottom: 18px; }
   .toc-list { display: flex; margin-top: 18px; overflow-x: auto; }
-  .toc-list button { min-width: 245px; background: rgba(255,255,255,.3); }
+  .toc-chapter-item { min-width: 270px; background: rgba(255,255,255,.3); }
   .reading-page { width: min(100% - 30px, 680px); padding: 44px 0 120px; }
   .reading-heading { margin-bottom: 28px; }
   .reading-heading h2 { font-size: 34px; }

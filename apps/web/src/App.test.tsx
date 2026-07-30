@@ -9,6 +9,7 @@ const testState = vi.hoisted(() => ({
   user: null as null | { uid: string; photoURL: string | null },
   workerLinks: [] as Array<Record<string, unknown>>,
   cloudBooks: [] as Array<Record<string, unknown>>,
+  generationQueue: [] as Array<Record<string, unknown>>,
 }));
 
 const pairingMocks = vi.hoisted(() => ({
@@ -22,6 +23,11 @@ const bookMocks = vi.hoisted(() => ({
     cancelled_tasks: 1,
     queued_audio_chunks: 2,
   })),
+}));
+
+const queueMocks = vi.hoisted(() => ({
+  reorder: vi.fn(async () => undefined),
+  update: vi.fn(async () => 1),
 }));
 
 vi.mock("./firebase", () => ({
@@ -74,21 +80,21 @@ vi.mock("./agent", () => ({
 }));
 
 vi.mock("./cloud", () => ({
-  buildGenerationQueue: vi.fn(() => []),
+  buildGenerationQueue: vi.fn(() => testState.generationQueue),
   enqueueGenerationChapters: vi.fn(),
   generationTaskIsLive: vi.fn(() => false),
   loadCloudProgress: vi.fn(async () => null),
   loadRemoteBook: vi.fn(async () => demoBook),
   loadVoiceGenerationProfile: vi.fn(async () => null),
   markBookListened: vi.fn(async () => undefined),
-  reorderGenerationQueue: vi.fn(async () => undefined),
+  reorderGenerationQueue: queueMocks.reorder,
   requestAudioRepair: vi.fn(async () => undefined),
   requestBookDeletion: bookMocks.requestDeletion,
   saveBookmark: vi.fn(async () => "bookmark-a"),
   saveProgressOptimistically: vi.fn(),
   saveVoiceGenerationProfile: vi.fn(async () => undefined),
   syncBookMetadata: vi.fn(async () => undefined),
-  updateGenerationQueueItem: vi.fn(async () => 1),
+  updateGenerationQueueItem: queueMocks.update,
   watchAudioChunks: vi.fn(() => () => undefined),
   watchBookmarks: vi.fn(() => () => undefined),
   watchCloudBooks: vi.fn((_ownerUid: string, listener: (books: unknown[]) => void) => {
@@ -131,10 +137,13 @@ describe("书架响应式入口", () => {
     testState.user = null;
     testState.workerLinks = [];
     testState.cloudBooks = [];
+    testState.generationQueue = [];
     pairingMocks.revoke.mockClear();
     bookMocks.deleteLocal.mockClear();
     bookMocks.hide.mockClear();
     bookMocks.requestDeletion.mockClear();
+    queueMocks.reorder.mockClear();
+    queueMocks.update.mockClear();
     setPlatform(1280, "MacIntel");
   });
 
@@ -190,6 +199,54 @@ describe("书架响应式入口", () => {
     expect(screen.getByRole("heading", { name: "待生成列表" })).toBeInTheDocument();
     expect(screen.getByText("第一步")).toBeInTheDocument();
     expect(screen.getByText("第二步")).toBeInTheDocument();
+  });
+
+  it("可在目录中继续暂停章节并把它置顶", async () => {
+    testState.firebaseConfigured = true;
+    testState.user = { uid: "owner-a", photoURL: null };
+    const queueItem = (chapterId: string, chapterTitle: string, status: string, priority: number) => ({
+      queue_id: `${demoBook.book_id}:${chapterId}`,
+      book_id: demoBook.book_id,
+      chapter_id: chapterId,
+      book_title: demoBook.title,
+      chapter_title: chapterTitle,
+      status,
+      priority,
+      task_ids: [`task-${chapterId}`],
+      total_chunks: 2,
+      ready_chunks: 0,
+      pending_chunks: 2,
+      estimated_seconds: 100,
+      progress_percent: 0,
+      progress_stage: "",
+      current_task_id: "",
+      current_piece: 0,
+      current_piece_total: 0,
+      generated_audio_seconds: 0,
+      elapsed_seconds: 0,
+      eta_seconds: null,
+      chapter_eta_seconds: null,
+      historical_pause: false,
+    });
+    const secondChapter = demoBook.chapters[1]!;
+    const firstChapter = demoBook.chapters[0]!;
+    const queued = queueItem(secondChapter.chapter_id, secondChapter.title, "QUEUED", 1_000);
+    const paused = queueItem(firstChapter.chapter_id, firstChapter.title, "PAUSED", 900);
+    testState.generationQueue = [queued, paused];
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: `继续生成${firstChapter.title}` }));
+    await waitFor(() => expect(queueMocks.update).toHaveBeenCalledWith(
+      "owner-a",
+      paused.task_ids,
+      "RESUME",
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: `将${firstChapter.title}置顶` }));
+    await waitFor(() => expect(queueMocks.reorder).toHaveBeenCalledWith(
+      "owner-a",
+      [paused, queued],
+    ));
   });
 
   it("已配对时显示连接状态，并可确认撤销 Mac 权限", async () => {

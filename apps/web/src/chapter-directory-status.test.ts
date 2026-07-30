@@ -92,6 +92,8 @@ describe("chapter directory status", () => {
       [queueItem("GENERATING", 46.4)],
     )).toEqual({
       playable: true,
+      playable_label: "可听 0:10",
+      playable_seconds: 10,
       generation_label: "生成中 46%",
       generation_tone: "generating",
       progress_percent: 46,
@@ -111,11 +113,28 @@ describe("chapter directory status", () => {
     const chunk = readyChunk();
     chunk.asset_url = null;
     expect(chapterDirectoryStatus(book, book.chapters[0]!, [chunk], []))
-      .toMatchObject({ playable: false, generation_tone: "none" });
+      .toMatchObject({
+        playable: false,
+        playable_label: "",
+        playable_seconds: 0,
+        generation_tone: "none",
+      });
   });
 
   it("shows cleanup when a chapter has no remaining playable chunk", () => {
     expect(chapterDirectoryStatus(book, book.chapters[0]!, [readyChunk("DELETING")], []))
       .toMatchObject({ playable: false, generation_label: "音频清理中", generation_tone: "deleting" });
+  });
+
+  it("adds the duration of every genuinely playable chunk in the chapter", () => {
+    const second = readyChunk();
+    second.chunk_id = "chunk-b";
+    second.duration_seconds = 65;
+    expect(chapterDirectoryStatus(book, book.chapters[0]!, [readyChunk(), second], []))
+      .toMatchObject({
+        playable: true,
+        playable_label: "可听 1:15",
+        playable_seconds: 75,
+      });
   });
 });

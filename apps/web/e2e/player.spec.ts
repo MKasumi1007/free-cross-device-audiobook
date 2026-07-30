@@ -70,8 +70,8 @@ test("restores a deliberately selected reading position after reload", async ({ 
 
 test("uses the correct responsive controls", async ({ page }, testInfo) => {
   await expect(page.getByLabel("听书播放器")).toBeVisible();
-  await expect(page.getByRole("button", { name: /第一章 清晨，可听/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /第二章 夜读，可听/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /第一章 清晨，可听 0:02/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /第二章 夜读，可听 0:02/ })).toBeVisible();
   if (testInfo.project.name === "mobile-chrome") {
     await expect(page.getByRole("button", { name: "选择要生成的章节" })).toHaveCount(0);
     await expect(page.getByText("登录后可以选择章节，并安排生成顺序。")).toBeVisible();

@@ -21,12 +21,14 @@ import {
   loadCloudProgress,
   loadRemoteBook,
   markBookListened,
+  reorderGenerationQueue,
   requestBookDeletion,
   requestAudioRepair,
   saveBookmark,
   saveProgressOptimistically,
   saveVoiceGenerationProfile,
   syncBookMetadata,
+  updateGenerationQueueItem,
   watchAudioChunks,
   watchBookmarks,
   watchCloudBooks,
@@ -34,6 +36,7 @@ import {
   type AudioChunk,
   type CloudBookmark,
   type CloudBookSummary,
+  type GenerationQueueItem,
   type GenerationTaskSummary,
   type ProgressInput,
 } from "./cloud";
@@ -196,6 +199,7 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [pageVisible, setPageVisible] = useState(() => !document.hidden);
   const [cloudSyncPaused, setCloudSyncPaused] = useState(() => cloudSyncIsPaused());
+  const [directoryActionBusy, setDirectoryActionBusy] = useState("");
   const progressQueues = useRef(new Map<string, Promise<void>>());
   const currentProgress = useRef<LocalProgress | null>(null);
   const jumpSequence = useRef(0);
@@ -373,6 +377,9 @@ export function App() {
     ? voiceStatus.voice_version
     : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";
   const generationQueue = buildGenerationQueue(generationTasks, visibleBooks);
+  const priorityGenerationItems = generationQueue.filter((item) => (
+    item.status === "QUEUED" || item.status === "PAUSED"
+  ));
   const queuedChapterCount = generationQueue
     .filter((item) => item.status !== "COMPLETED" && item.status !== "REMOVED")
     .length;
@@ -812,6 +819,44 @@ export function App() {
     if (segmentId) requestPlayerJump(segmentId);
   }
 
+  async function resumeChapterGeneration(item: GenerationQueueItem) {
+    if (!user) return;
+    setDirectoryActionBusy(item.queue_id);
+    try {
+      const changed = await updateGenerationQueueItem(user.uid, item.task_ids, "RESUME");
+      setNotice(changed
+        ? "这一章已继续生成，Mac 会自动接着处理。"
+        : "这一章的状态已经更新，不需要重复操作。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "继续生成没有保存成功。");
+    } finally {
+      setDirectoryActionBusy("");
+    }
+  }
+
+  async function prioritizeChapterGeneration(item: GenerationQueueItem) {
+    if (!user) return;
+    const activeItems = generationQueue.filter((entry) => (
+      entry.status !== "COMPLETED" && entry.status !== "REMOVED"
+    ));
+    const generating = activeItems.filter((entry) => entry.status === "GENERATING");
+    const movable = activeItems.filter((entry) => (
+      (entry.status === "QUEUED" || entry.status === "PAUSED")
+      && entry.queue_id !== item.queue_id
+    ));
+    setDirectoryActionBusy(item.queue_id);
+    try {
+      await reorderGenerationQueue(user.uid, [...generating, item, ...movable]);
+      setNotice(generating.length
+        ? "已置顶；当前章节完成后，会优先生成这一章。"
+        : "已置顶；这一章会优先生成。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "置顶顺序没有保存成功。");
+    } finally {
+      setDirectoryActionBusy("");
+    }
+  }
+
   function markPosition(segment: TextSegment) {
     if (!selectedBook || !selectedChapter) return;
     setSelectedSegmentId(segment.segment_id);
@@ -1010,53 +1055,101 @@ export function App() {
                   audioChunks,
                   generationQueue,
                 );
+                const queueItem = generationQueue.find((item) => (
+                  item.book_id === selectedBook.book_id
+                  && item.chapter_id === chapter.chapter_id
+                ));
+                const canPrioritize = Boolean(
+                  user
+                  && queueItem
+                  && (queueItem.status === "QUEUED" || queueItem.status === "PAUSED"),
+                );
+                const alreadyPrioritized = (
+                  priorityGenerationItems[0]?.queue_id === queueItem?.queue_id
+                );
+                const actionBusy = directoryActionBusy === queueItem?.queue_id;
                 const statusDescription = [
-                  status.playable ? "可听" : "",
+                  status.playable_label,
                   status.generation_label || (!status.playable ? "尚未生成" : ""),
                 ].filter(Boolean).join("，");
                 return (
-                  <button
+                  <div
                     key={chapter.chapter_id}
-                    className={chapter.chapter_id === selectedChapter?.chapter_id ? "is-active" : ""}
-                    onClick={() => openChapter(chapter)}
-                    aria-label={`${chapter.title}，${statusDescription}`}
+                    className={[
+                      "toc-chapter-item",
+                      chapter.chapter_id === selectedChapter?.chapter_id ? "is-active" : "",
+                    ].filter(Boolean).join(" ")}
                   >
-                    <span className="toc-chapter-number">
-                      {String(chapter.order + 1).padStart(2, "0")}
-                    </span>
-                    <span className="toc-chapter-copy">
-                      <b>{chapter.title}</b>
-                      <small>{chapterPreview(chapter)}</small>
-                      {status.progress_percent !== null
-                        && status.progress_percent > 0
-                        && status.progress_percent < 100
-                        && (
-                          <span
-                            className={`toc-progress toc-progress--${status.generation_tone}`}
-                            role="progressbar"
-                            aria-label={`${chapter.title}生成进度`}
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                            aria-valuenow={status.progress_percent}
-                          >
-                            <span style={{ width: `${status.progress_percent}%` }} />
+                    <button
+                      className="toc-chapter-open"
+                      onClick={() => openChapter(chapter)}
+                      aria-label={`${chapter.title}，${statusDescription}`}
+                    >
+                      <span className="toc-chapter-number">
+                        {String(chapter.order + 1).padStart(2, "0")}
+                      </span>
+                      <span className="toc-chapter-copy">
+                        <b>{chapter.title}</b>
+                        <small>{chapterPreview(chapter)}</small>
+                        {status.progress_percent !== null
+                          && status.progress_percent > 0
+                          && status.progress_percent < 100
+                          && (
+                            <span
+                              className={`toc-progress toc-progress--${status.generation_tone}`}
+                              role="progressbar"
+                              aria-label={`${chapter.title}生成进度`}
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={status.progress_percent}
+                            >
+                              <span style={{ width: `${status.progress_percent}%` }} />
+                            </span>
+                          )}
+                      </span>
+                      <span className="toc-chapter-status" aria-hidden="true">
+                        {status.playable && (
+                          <span className="toc-status-badge toc-status-badge--playable">
+                            {status.playable_label}
                           </span>
                         )}
-                    </span>
-                    <span className="toc-chapter-status" aria-hidden="true">
-                      {status.playable && (
-                        <span className="toc-status-badge toc-status-badge--playable">可听</span>
-                      )}
-                      {status.generation_label && (
-                        <span className={`toc-status-badge toc-status-badge--${status.generation_tone}`}>
-                          {status.generation_label}
-                        </span>
-                      )}
-                      {!status.playable && !status.generation_label && (
-                        <span className="toc-status-badge toc-status-badge--none">尚未生成</span>
-                      )}
-                    </span>
-                  </button>
+                        {status.generation_label && status.generation_tone !== "paused" && (
+                          <span className={`toc-status-badge toc-status-badge--${status.generation_tone}`}>
+                            {status.generation_label}
+                          </span>
+                        )}
+                        {!status.playable && !status.generation_label && (
+                          <span className="toc-status-badge toc-status-badge--none">尚未生成</span>
+                        )}
+                      </span>
+                    </button>
+                    {user && queueItem && (
+                      queueItem.status === "PAUSED" || canPrioritize
+                    ) && (
+                      <div className="toc-chapter-actions">
+                        {queueItem.status === "PAUSED" && (
+                          <button
+                            className="toc-action-button toc-action-button--resume"
+                            disabled={actionBusy}
+                            onClick={() => void resumeChapterGeneration(queueItem)}
+                            aria-label={`继续生成${chapter.title}`}
+                          >
+                            {actionBusy ? "处理中…" : "继续生成"}
+                          </button>
+                        )}
+                        {canPrioritize && (
+                          <button
+                            className="toc-action-button"
+                            disabled={actionBusy || alreadyPrioritized}
+                            onClick={() => void prioritizeChapterGeneration(queueItem)}
+                            aria-label={`${alreadyPrioritized ? "已经置顶" : "将"}${chapter.title}${alreadyPrioritized ? "" : "置顶"}`}
+                          >
+                            {alreadyPrioritized ? "已置顶" : "置顶"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </nav>
