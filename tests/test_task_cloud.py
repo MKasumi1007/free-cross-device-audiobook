@@ -87,6 +87,7 @@ def test_worker_lists_and_claims_only_metadata_without_book_text() -> None:
             "target_seconds": 600,
             "voice_version": "voice-a",
         })}]),
+        (200, []),
         (200, {"writeResults": [{"updateTime": "2026-07-17T09:01:00Z"}]}),
     ])
     tasks = FirestoreWorkerTasks(make_client(transport))
@@ -159,10 +160,42 @@ def test_worker_auto_resumes_only_safe_paused_reasons() -> None:
                 "deletion_generation": 0,
             })},
         ]),
+        (200, []),
     ])
     task = FirestoreWorkerTasks(make_client(transport)).next_task("owner-a")
     assert task is not None
     assert task.task_id == "memory-paused"
+
+
+def test_worker_recovers_expired_active_task_even_when_other_work_is_queued() -> None:
+    transport = FakeTransport([
+        (200, [
+            {"document": document("users/owner-a/generationRequests/queued", {
+                "task_id": "queued",
+                "book_id": "book-a",
+                "status": "QUEUED",
+                "priority": 100,
+                "attempt_id": 0,
+                "deletion_generation": 0,
+            })},
+        ]),
+        (200, [
+            {"document": document("users/owner-a/generationRequests/stale", {
+                "task_id": "stale",
+                "book_id": "book-a",
+                "status": "GENERATING",
+                "priority": 300,
+                "attempt_id": 1,
+                "deletion_generation": 0,
+                "lease_deadline": datetime.now(UTC) - timedelta(minutes=1),
+            })},
+        ]),
+    ])
+
+    task = FirestoreWorkerTasks(make_client(transport)).next_task("owner-a")
+
+    assert task is not None
+    assert task.task_id == "stale"
 
 
 def test_ready_metadata_is_idempotent_and_bound_to_task_lease() -> None:

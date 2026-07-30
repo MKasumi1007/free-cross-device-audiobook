@@ -7,7 +7,7 @@ DATA_ROOT="${AUDIOBOOK_DATA_ROOT:-$HOME/Library/Application Support/$LEGACY_DATA
 INSTALLER="$DATA_ROOT/installer/install.sh"
 
 case "$ACTION" in
-  qwen|model|launch_agent)
+  qwen|mlx|model|launch_agent)
     exec /bin/bash "$INSTALLER" --repair "$ACTION" --source-root "$DATA_ROOT"
     ;;
   runtime)

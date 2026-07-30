@@ -140,11 +140,10 @@ class FirestoreWorkerTasks:
             for task in tasks
             if task.status != "PAUSED" or task.pause_reason in self.AUTO_RESUME_PAUSES
         ]
-        if not tasks:
-            tasks = self._query_by_status(
-                owner_uid,
-                ["LEASED", "GENERATING", "ENCODING", "UPLOADING"],
-            )
+        tasks.extend(self._query_by_status(
+            owner_uid,
+            ["LEASED", "GENERATING", "ENCODING", "UPLOADING"],
+        ))
         now = datetime.now(UTC)
         claimable = [
             task

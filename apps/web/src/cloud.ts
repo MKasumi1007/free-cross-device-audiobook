@@ -158,6 +158,7 @@ export interface GenerationTaskSummary {
   progress_elapsed_seconds?: number;
   progress_eta_seconds?: number | null;
   progress_started_at?: unknown;
+  lease_deadline?: unknown;
 }
 
 export type GenerationQueueStatus =
@@ -565,13 +566,35 @@ function chapterForTask(
   };
 }
 
+function timestampMillis(value: unknown): number | null {
+  if (value instanceof Date) return value.getTime();
+  if (!value || typeof value !== "object") return null;
+  const timestamp = value as {
+    seconds?: number;
+    nanoseconds?: number;
+    toMillis?: () => number;
+  };
+  if (typeof timestamp.toMillis === "function") return timestamp.toMillis();
+  if (typeof timestamp.seconds === "number") {
+    return timestamp.seconds * 1000 + Number(timestamp.nanoseconds || 0) / 1_000_000;
+  }
+  return null;
+}
+
+function isLiveGenerationTask(task: GenerationTaskSummary): boolean {
+  if (!ACTIVE_GENERATION_STATUSES.has(task.status)) return false;
+  const deadline = timestampMillis(task.lease_deadline);
+  return deadline == null || deadline > Date.now();
+}
+
 function queueStatus(tasks: readonly GenerationTaskSummary[]): GenerationQueueStatus {
-  if (tasks.some((task) => ACTIVE_GENERATION_STATUSES.has(task.status))) return "GENERATING";
+  if (tasks.some(isLiveGenerationTask)) return "GENERATING";
   if (tasks.some((task) => task.status === "FAILED_RETRYABLE" || task.status === "FAILED_FINAL")) {
     return "FAILED";
   }
   if (tasks.some((task) => task.status === "QUEUED")) return "QUEUED";
   if (tasks.some((task) => task.status === "PAUSED")) return "PAUSED";
+  if (tasks.some((task) => ACTIVE_GENERATION_STATUSES.has(task.status))) return "QUEUED";
   if (tasks.every((task) => task.status === "READY")) return "COMPLETED";
   return "REMOVED";
 }
@@ -611,7 +634,12 @@ export function buildGenerationQueue(
       const pending = ordered.filter((task) => (
         task.status !== "READY" && task.status !== "CANCELLED"
       )).length;
-      const active = ordered.find((task) => ACTIVE_GENERATION_STATUSES.has(task.status));
+      const active = ordered
+        .filter(isLiveGenerationTask)
+        .sort((left, right) => (
+          Number(timestampMillis(right.lease_deadline) || 0)
+          - Number(timestampMillis(left.lease_deadline) || 0)
+        ))[0];
       const activeCompleted = Number(active?.progress_completed_units || 0);
       const activeTotal = Number(active?.progress_total_units || 0);
       const activeFraction = activeTotal > 0

@@ -152,6 +152,29 @@ describe("manual chapter generation queue", () => {
       chapter_eta_seconds: 1_250,
     });
   });
+
+  it("does not present an expired worker lease as a frozen active task", () => {
+    const queue = buildGenerationQueue([
+      {
+        task_id: "expired",
+        book_id: "book-long",
+        chapter_id: "chapter-1",
+        status: "GENERATING",
+        priority: 1_000,
+        chunk_order: 0,
+        estimated_seconds: 600,
+        lease_deadline: new Date(Date.now() - 60_000),
+        progress_completed_units: 3,
+        progress_total_units: 10,
+      },
+    ], [longBook()]);
+
+    expect(queue[0]).toMatchObject({
+      status: "QUEUED",
+      current_task_id: "",
+      progress_percent: 0,
+    });
+  });
 });
 
 describe("remote audio inventory", () => {

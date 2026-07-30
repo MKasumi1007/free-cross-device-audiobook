@@ -16,14 +16,17 @@ launchctl bootout "$DOMAIN" "$WATCHDOG_PLIST" >/dev/null 2>&1 || true
 /bin/rm -f "$WATCHDOG_PLIST"
 
 for target in \
-  "$DATA_ROOT/agent-runtime" "$DATA_ROOT/qwen-runtime" \
-  "$DATA_ROOT/agent-runtime.next" "$DATA_ROOT/qwen-runtime.next" \
+  "$DATA_ROOT/agent-runtime" "$DATA_ROOT/qwen-runtime" "$DATA_ROOT/mlx-runtime" \
+  "$DATA_ROOT/agent-runtime.next" "$DATA_ROOT/qwen-runtime.next" "$DATA_ROOT/mlx-runtime.next" \
   "$DATA_ROOT/agent-runtime.previous" "$DATA_ROOT/qwen-runtime.previous" \
+  "$DATA_ROOT/mlx-runtime.previous" \
   "$DATA_ROOT/tools" "$DATA_ROOT/installer"; do
   case "$target" in
-    "$DATA_ROOT/agent-runtime"|"$DATA_ROOT/qwen-runtime"|"$DATA_ROOT/agent-runtime.next"|\
-    "$DATA_ROOT/qwen-runtime.next"|"$DATA_ROOT/agent-runtime.previous"|\
-    "$DATA_ROOT/qwen-runtime.previous"|"$DATA_ROOT/tools"|"$DATA_ROOT/installer")
+    "$DATA_ROOT/agent-runtime"|"$DATA_ROOT/qwen-runtime"|"$DATA_ROOT/mlx-runtime"|\
+    "$DATA_ROOT/agent-runtime.next"|"$DATA_ROOT/qwen-runtime.next"|\
+    "$DATA_ROOT/mlx-runtime.next"|"$DATA_ROOT/agent-runtime.previous"|\
+    "$DATA_ROOT/qwen-runtime.previous"|"$DATA_ROOT/mlx-runtime.previous"|\
+    "$DATA_ROOT/tools"|"$DATA_ROOT/installer")
       /bin/rm -rf "$target"
       ;;
     *) echo "拒绝删除非运行组件路径：$target" >&2; exit 1 ;;

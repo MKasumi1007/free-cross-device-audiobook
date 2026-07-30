@@ -15,9 +15,11 @@ from .launchd import LABEL
 from .paths import (
     AGENT_PORT,
     APP_VERSION,
+    DEFAULT_MLX_MODEL,
     DEFAULT_QWEN_MODEL,
     data_root,
     logs_root,
+    mlx_python,
     models_root,
     qwen_python,
     state_root,
@@ -44,11 +46,24 @@ class SystemDiagnostics:
         self.error_reporter = error_reporter
 
     def report(self, *, cloud_configured: bool, paired: bool | None, worker: Any = None) -> dict[str, Any]:
+        backend = os.environ.get("AUDIOBOOK_TTS_BACKEND", "qwen").strip().lower()
+        backend_items = (
+            [self._mlx_python(), *self._mlx_imports()]
+            if backend == "mlx"
+            else [self._qwen_python(), *self._qwen_imports()]
+        )
         items = [
             self._launch_agent(),
             self._agent_python(),
-            self._qwen_python(),
-            *self._qwen_imports(),
+            DiagnosticItem(
+                key="tts_backend",
+                label="声音引擎",
+                status="ok" if backend in {"mlx", "qwen"} else "failed",
+                detail="MLX 4 位加速引擎（双段并行）。" if backend == "mlx" else "Qwen PyTorch 兼容引擎。",
+                suggestion="点击自动修复恢复声音引擎设置。" if backend not in {"mlx", "qwen"} else "",
+                repair_action="runtime" if backend not in {"mlx", "qwen"} else "",
+            ),
+            *backend_items,
             self._binary("ffmpeg", "FFmpeg", "FFMPEG_MISSING"),
             self._model_files(),
             self._model_self_test(),
@@ -85,7 +100,7 @@ class SystemDiagnostics:
         }
 
     def start_repair(self, action: str) -> dict[str, str]:
-        allowed = {"runtime", "qwen", "model", "launch_agent"}
+        allowed = {"runtime", "qwen", "mlx", "model", "launch_agent"}
         if action not in allowed:
             raise ValueError("不支持的自动修复操作。")
         repair = self.root / "installer/repair.sh"
@@ -196,6 +211,73 @@ class SystemDiagnostics:
             ))
         return items
 
+    def _mlx_python(self) -> DiagnosticItem:
+        path = mlx_python()
+        valid = path.is_file() and os.access(path, os.X_OK) and self._is_within(path, self.root)
+        return DiagnosticItem(
+            key="mlx_python",
+            label="MLX Python",
+            status="ok" if valid else "failed",
+            detail=str(path),
+            suggestion="点击自动修复建立独立 MLX 运行环境。" if not valid else "",
+            repair_action="mlx" if not valid else "",
+        )
+
+    def _mlx_imports(self) -> list[DiagnosticItem]:
+        path = mlx_python()
+        names = (("mlx", "MLX"), ("mlx_audio", "MLX-Audio"), ("soundfile", "soundfile"))
+        if not path.is_file():
+            return [
+                DiagnosticItem(
+                    key=f"import_{module}",
+                    label=f"导入 {label}",
+                    status="failed",
+                    detail="MLX 运行环境不存在。",
+                    suggestion="点击自动修复安装 MLX 依赖。",
+                    repair_action="mlx",
+                )
+                for module, label in names
+            ]
+        script = (
+            "import importlib,json;"
+            "names=['mlx','mlx_audio','soundfile'];"
+            "out={};"
+            "\nfor name in names:\n"
+            " try:\n  importlib.import_module(name); out[name]={'ok':True}\n"
+            " except Exception as exc:\n  out[name]={'ok':False,'error':type(exc).__name__+': '+str(exc)}\n"
+            "print(json.dumps(out))"
+        )
+        try:
+            result = subprocess.run(
+                [str(path), "-c", script],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=45,
+                env=self._mlx_env(),
+            )
+            value = json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else {}
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError) as error:
+            self.error_reporter.record(
+                "diagnostics.mlx_imports",
+                error,
+                code="MLX_IMPORT_CHECK_FAILED",
+            )
+            value = {}
+        items: list[DiagnosticItem] = []
+        for module, label in names:
+            record = value.get(module, {}) if isinstance(value, dict) else {}
+            ok = bool(record.get("ok"))
+            items.append(DiagnosticItem(
+                key=f"import_{module}",
+                label=f"导入 {label}",
+                status="ok" if ok else "failed",
+                detail="依赖可以正常导入。" if ok else str(record.get("error") or "依赖导入失败。"),
+                suggestion="点击自动修复重建 MLX 环境。" if not ok else "",
+                repair_action="mlx" if not ok else "",
+            ))
+        return items
+
     @staticmethod
     def _binary(name: str, label: str, _code: str) -> DiagnosticItem:
         path = shutil.which(name)
@@ -209,22 +291,33 @@ class SystemDiagnostics:
         )
 
     def _model_files(self) -> DiagnosticItem:
-        cache = models_root() / "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots"
+        mlx_backend = os.environ.get("AUDIOBOOK_TTS_BACKEND", "qwen").strip().lower() == "mlx"
+        model = DEFAULT_MLX_MODEL if mlx_backend else DEFAULT_QWEN_MODEL
+        repository = (
+            "models--mlx-community--Qwen3-TTS-12Hz-0.6B-Base-4bit"
+            if mlx_backend
+            else "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base"
+        )
+        cache = models_root() / f"hub/{repository}/snapshots"
         configs = list(cache.glob("*/config.json")) if cache.exists() else []
         return DiagnosticItem(
             key="model_files",
-            label="Qwen 模型文件",
+            label="声音模型文件",
             status="ok" if configs else "failed",
-            detail=str(configs[0].parent) if configs else f"{DEFAULT_QWEN_MODEL} 尚未下载到正式模型目录。",
-            suggestion="点击自动修复下载免费模型；模型约 2.3 GiB。" if not configs else "",
-            repair_action="model" if not configs else "",
+            detail=str(configs[0].parent) if configs else f"{model} 尚未下载到正式模型目录。",
+            suggestion="点击自动修复下载免费模型。" if not configs else "",
+            repair_action="mlx" if mlx_backend and not configs else "model" if not configs else "",
         )
 
     def _model_self_test(self) -> DiagnosticItem:
-        path = state_root() / "model-self-test.json"
+        mlx_backend = os.environ.get("AUDIOBOOK_TTS_BACKEND", "qwen").strip().lower() == "mlx"
+        expected_model = DEFAULT_MLX_MODEL if mlx_backend else DEFAULT_QWEN_MODEL
+        path = state_root() / (
+            "mlx-model-self-test.json" if mlx_backend else "model-self-test.json"
+        )
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-            ok = value.get("status") == "ok" and value.get("model") == DEFAULT_QWEN_MODEL
+            ok = value.get("status") == "ok" and value.get("model") == expected_model
         except (OSError, json.JSONDecodeError, TypeError):
             value = {}
             ok = False
@@ -233,14 +326,43 @@ class SystemDiagnostics:
             label="真实模型生成自检",
             status="ok" if ok else "warning",
             detail=(
-                f"{value.get('checked_at')}：MPS 生成 WAV 并编码 M4A 成功。"
+                f"{value.get('checked_at')}："
+                f"{'MLX' if mlx_backend else 'MPS'} 生成 WAV 并编码 M4A 成功。"
                 if ok else "尚无正式运行目录中的真实生成证据。"
             ),
             suggestion="点击自动修复执行模型加载和短中文生成测试。" if not ok else "",
-            repair_action="model" if not ok else "",
+            repair_action="mlx" if mlx_backend and not ok else "model" if not ok else "",
         )
 
     def _mps(self) -> DiagnosticItem:
+        if os.environ.get("AUDIOBOOK_TTS_BACKEND", "qwen").strip().lower() == "mlx":
+            path = mlx_python()
+            if not path.is_file():
+                return DiagnosticItem(
+                    "mps",
+                    "Apple GPU",
+                    "failed",
+                    "无法检查 MLX Metal。",
+                    "先修复 MLX 环境。",
+                    "mlx",
+                )
+            result = subprocess.run(
+                [str(path), "-c", "import mlx.core as mx; print(int(mx.metal.is_available()))"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+                env=self._mlx_env(),
+            )
+            available = result.returncode == 0 and result.stdout.strip().endswith("1")
+            return DiagnosticItem(
+                key="mps",
+                label="Apple GPU",
+                status="ok" if available else "failed",
+                detail="MLX Metal 可用。" if available else "MLX Metal 不可用。",
+                suggestion="确认使用 Apple Silicon 和受支持的 macOS。" if not available else "",
+                repair_action="mlx" if not available else "",
+            )
         path = qwen_python()
         if not path.is_file():
             return DiagnosticItem("mps", "Apple MPS", "failed", "无法检查 MPS。", "先修复 Qwen 环境。", "qwen")
@@ -300,4 +422,12 @@ class SystemDiagnostics:
             **os.environ,
             "HF_HOME": str(models_root()),
             "AUDIOBOOK_QWEN_MODEL": os.environ.get("AUDIOBOOK_QWEN_MODEL", DEFAULT_QWEN_MODEL),
+        }
+
+    @staticmethod
+    def _mlx_env() -> dict[str, str]:
+        return {
+            **os.environ,
+            "HF_HOME": str(models_root()),
+            "AUDIOBOOK_MLX_MODEL": os.environ.get("AUDIOBOOK_MLX_MODEL", DEFAULT_MLX_MODEL),
         }

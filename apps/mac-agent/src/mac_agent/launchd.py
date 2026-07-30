@@ -9,7 +9,11 @@ import sys
 import time
 from pathlib import Path
 
-from .paths import data_root as application_data_root
+from .paths import (
+    DEFAULT_MLX_MODEL,
+    DEFAULT_QWEN_MODEL,
+    data_root as application_data_root,
+)
 
 LABEL = "io.github.mkasumi1007.audiobook-mac-agent"
 WATCHDOG_LABEL = "io.github.mkasumi1007.audiobook-mac-agent-watchdog"
@@ -53,6 +57,7 @@ def install_launch_agent(
     python_path: Path | None = None,
     data_directory: Path | None = None,
     config_source: Path | None = None,
+    tts_backend: str = "mlx",
 ) -> Path:
     data_root = data_directory or application_data_root()
     installed_runtime = data_root / "agent-runtime/bin/python"
@@ -74,7 +79,7 @@ def install_launch_agent(
         "ProgramArguments": [str(python), "-m", "mac_agent.main"],
         "RunAtLoad": True,
         "KeepAlive": True,
-        "ProcessType": "Background",
+        "ProcessType": "Standard",
         "ThrottleInterval": 10,
         "StandardOutPath": str(logs / "agent.log"),
         "StandardErrorPath": str(logs / "agent-error.log"),
@@ -87,9 +92,17 @@ def install_launch_agent(
             "AUDIOBOOK_QWEN_PYTHON": str(
                 data_root / "qwen-runtime/bin/python"
             ),
+            "AUDIOBOOK_MLX_PYTHON": str(
+                data_root / "mlx-runtime/bin/python"
+            ),
             "AUDIOBOOK_DATA_ROOT": str(data_root),
-            "AUDIOBOOK_QWEN_MODEL": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            "AUDIOBOOK_TTS_BACKEND": tts_backend,
+            "AUDIOBOOK_TTS_BATCH_SIZE": "2",
+            "AUDIOBOOK_QWEN_MODEL": DEFAULT_QWEN_MODEL,
+            "AUDIOBOOK_MLX_MODEL": DEFAULT_MLX_MODEL,
             "HF_HOME": str(data_root / "models/huggingface"),
+            "HF_HUB_DISABLE_XET": "1",
+            "HF_HUB_DOWNLOAD_TIMEOUT": "120",
         },
     }
     temporary = target.with_suffix(".tmp")

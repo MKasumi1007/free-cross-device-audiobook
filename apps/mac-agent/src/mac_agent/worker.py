@@ -265,12 +265,14 @@ class MacGenerationWorker:
             self.last_state = "FAILED_RETRYABLE"
             return True
         task = self.tasks.transition(task, "GENERATING", progress_stage="MODEL_LOADING")
+        self.last_state = "MODEL_LOADING"
         fence = RenewingFence(self.tasks, task)
         fence.start()
         try:
             self._ensure_book_text(fence.task.owner_uid, fence.task.task_id, book)
             job = self._make_job(book, task, profile)
             generator = self._generator_for(profile)
+            self.last_state = "GENERATING"
             publisher = (
                 FirestorePrivateAssetPublisher(
                     self.tasks.client,

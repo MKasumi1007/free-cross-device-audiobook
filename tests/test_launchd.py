@@ -23,12 +23,23 @@ def test_launch_agent_is_private_bounded_and_contains_no_credentials(tmp_path: P
         payload = plistlib.load(handle)
     assert payload["RunAtLoad"] is True
     assert payload["KeepAlive"] is True
+    assert payload["ProcessType"] == "Standard"
     assert payload["ProgramArguments"][-2:] == ["-m", "mac_agent.main"]
     text = target.read_text(encoding="utf-8")
     assert "token" not in text.lower()
     assert "password" not in text.lower()
     assert payload["EnvironmentVariables"]["HF_HOME"].endswith("models/huggingface")
+    assert payload["EnvironmentVariables"]["HF_HUB_DISABLE_XET"] == "1"
+    assert payload["EnvironmentVariables"]["HF_HUB_DOWNLOAD_TIMEOUT"] == "120"
     assert payload["EnvironmentVariables"]["AUDIOBOOK_DATA_ROOT"].endswith("听见书页")
+    assert payload["EnvironmentVariables"]["AUDIOBOOK_TTS_BACKEND"] == "mlx"
+    assert payload["EnvironmentVariables"]["AUDIOBOOK_TTS_BATCH_SIZE"] == "2"
+    assert payload["EnvironmentVariables"]["AUDIOBOOK_MLX_PYTHON"].endswith(
+        "mlx-runtime/bin/python"
+    )
+    assert payload["EnvironmentVariables"]["AUDIOBOOK_MLX_MODEL"].endswith(
+        "Qwen3-TTS-12Hz-0.6B-Base-4bit"
+    )
     assert "tools/ffmpeg-7.1-imageio-0.6.0" in payload["EnvironmentVariables"]["PATH"]
 
 

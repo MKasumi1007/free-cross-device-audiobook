@@ -11,7 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .paths import DEFAULT_QWEN_MODEL, data_root, logs_root, qwen_python
+from .paths import (
+    DEFAULT_MLX_MODEL,
+    DEFAULT_QWEN_MODEL,
+    data_root,
+    logs_root,
+    mlx_python,
+    qwen_python,
+)
 from .resources import ResourcePolicy
 
 
@@ -110,8 +117,11 @@ class LocalErrorReporter:
         return {
             "pid": os.getpid(),
             "python": sys.executable,
+            "tts_backend": os.environ.get("AUDIOBOOK_TTS_BACKEND", "qwen"),
             "qwen_python": str(qwen_python()),
-            "model": os.environ.get("AUDIOBOOK_QWEN_MODEL", DEFAULT_QWEN_MODEL),
+            "mlx_python": str(mlx_python()),
+            "qwen_model": os.environ.get("AUDIOBOOK_QWEN_MODEL", DEFAULT_QWEN_MODEL),
+            "mlx_model": os.environ.get("AUDIOBOOK_MLX_MODEL", DEFAULT_MLX_MODEL),
             "ffmpeg": shutil.which("ffmpeg"),
             "available_memory_bytes": policy.available_memory_bytes(),
             "disk_free_bytes": shutil.disk_usage(root.parent if root.exists() else Path.home()).free,

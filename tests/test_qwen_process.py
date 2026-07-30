@@ -19,23 +19,26 @@ class RecordingInput(io.StringIO):
         except json.JSONDecodeError:
             return result
         if request.get("command") == "generate":
-            output = Path(request["output"])
-            with wave.open(str(output), "wb") as writer:
-                writer.setnchannels(1)
-                writer.setsampwidth(2)
-                writer.setframerate(24000)
-                writer.writeframes(b"\0\0" * 240)
+            outputs = request.get("outputs") or [request["output"]]
+            for value in outputs:
+                output = Path(value)
+                with wave.open(str(output), "wb") as writer:
+                    writer.setnchannels(1)
+                    writer.setsampwidth(2)
+                    writer.setframerate(24000)
+                    writer.writeframes(b"\0\0" * 240)
         return result
 
 
 class FakeProcess:
-    def __init__(self, responses: int = 1) -> None:
+    def __init__(self, responses: int = 1, response_batch_size: int = 1) -> None:
         self.stdin = RecordingInput()
-        response = json.dumps({
-            "status": "ok",
-            "duration_seconds": 3.25,
-            "sample_rate": 24000,
-        }) + "\n"
+        item = {"duration_seconds": 3.25, "sample_rate": 24000}
+        response = json.dumps(
+            {"status": "ok", **item}
+            if response_batch_size == 1
+            else {"status": "ok", "items": [item] * response_batch_size}
+        ) + "\n"
         self.stdout = io.StringIO(response * responses)
         self.returncode: int | None = None
 
@@ -152,3 +155,30 @@ def test_qwen_generation_resumes_from_completed_small_pieces(tmp_path: Path) -> 
     assert generated.duration_seconds == pytest.approx(progress[-1][2])
     assert progress[-1][0] == progress[-1][1]
     assert len(second_requests) == progress[-1][1] - 1
+
+
+def test_qwen_generator_batches_two_missing_pieces_and_checkpoints_both(tmp_path: Path) -> None:
+    process = FakeProcess(responses=20, response_batch_size=2)
+    output = tmp_path / "segment.wav"
+    text = "这是一个足以拆成很多小段并验证两段批量生成的测试文本。" * 6
+    generator = QwenProcessGenerator(
+        python_path=tmp_path / "python",
+        worker_script=tmp_path / "worker.py",
+        reference_audio=tmp_path / "reference.wav",
+        reference_text="参考文字",
+        process_factory=lambda _command: process,
+        batch_size=2,
+        backend_name="mlx",
+    )
+
+    generated = generator.generate(text, output)
+    requests = [
+        json.loads(line)
+        for line in process.stdin.getvalue().splitlines()
+        if '"command": "generate"' in line
+    ]
+
+    assert generated.duration_seconds > 0
+    assert output.is_file()
+    assert all(len(request.get("texts", [request.get("text")])) <= 2 for request in requests)
+    assert any(len(request.get("texts", [])) == 2 for request in requests)

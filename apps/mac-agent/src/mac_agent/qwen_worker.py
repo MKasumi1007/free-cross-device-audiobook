@@ -90,6 +90,33 @@ def release_accelerator_cache(torch_module: Any) -> None:
         pass
 
 
+def generation_request(request: dict[str, Any]) -> tuple[list[str], list[Path]]:
+    """Accept the legacy single-item protocol and the bounded batch protocol."""
+    if "texts" in request or "outputs" in request:
+        texts = request.get("texts")
+        outputs = request.get("outputs")
+        if (
+            not isinstance(texts, list)
+            or not isinstance(outputs, list)
+            or not texts
+            or len(texts) != len(outputs)
+            or any(not isinstance(value, str) or not value.strip() for value in texts)
+            or any(not isinstance(value, str) or not value for value in outputs)
+        ):
+            raise ValueError("TTS_BAD_BATCH")
+        return [value.strip() for value in texts], [Path(value) for value in outputs]
+    text = str(request.get("text") or "").strip()
+    output = str(request.get("output") or "")
+    if not text or not output:
+        raise ValueError("TTS_BAD_REQUEST")
+    return [text], [Path(output)]
+
+
+def reference_identity(path: Path, transcript: str) -> tuple[str, int, int, str]:
+    stat = path.stat()
+    return (str(path), stat.st_size, stat.st_mtime_ns, transcript)
+
+
 def main() -> None:
     args = parse_args()
     try:
@@ -113,8 +140,10 @@ def main() -> None:
             response["code"] = "MPS_UNAVAILABLE"
         respond(response)
         return
+    clone_prompt_key: tuple[str, int, int, str] | None = None
+    clone_prompt: Any = None
     for line in sys.stdin:
-        output: Path | None = None
+        outputs: list[Path] = []
         try:
             request = json.loads(line)
             if request.get("command") == "shutdown":
@@ -129,60 +158,63 @@ def main() -> None:
             if not reference_audio.is_file():
                 respond({"status": "error", "code": "REFERENCE_AUDIO_MISSING"})
                 continue
-            output = Path(request["output"])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            pieces = split_generation_text(str(request["text"]))
-            if not pieces:
-                respond({"status": "error", "code": "TTS_EMPTY_OUTPUT"})
-                continue
-            writer: Any = None
-            sample_rate = 0
+            texts, outputs = generation_request(request)
+            if any(len(split_generation_text(text)) != 1 for text in texts):
+                raise ValueError("TTS_TEXT_EXCEEDS_BOUNDED_PIECE")
+            for output in outputs:
+                output.parent.mkdir(parents=True, exist_ok=True)
+
+            current_prompt_key = reference_identity(
+                reference_audio,
+                request["reference_text"],
+            )
+            if clone_prompt_key != current_prompt_key:
+                with contextlib.redirect_stdout(sys.stderr):
+                    clone_prompt = model.create_voice_clone_prompt(
+                        ref_audio=str(reference_audio),
+                        ref_text=request["reference_text"],
+                        x_vector_only_mode=False,
+                    )
+                clone_prompt_key = current_prompt_key
+
+            waveforms: Any = None
             try:
-                for piece in pieces:
-                    waveforms: Any = None
-                    try:
-                        with contextlib.redirect_stdout(sys.stderr):
-                            waveforms, piece_rate = model.generate_voice_clone(
-                                text=piece,
-                                language="Chinese",
-                                ref_audio=str(reference_audio),
-                                ref_text=request["reference_text"],
-                                x_vector_only_mode=False,
-                                non_streaming_mode=True,
-                            )
-                        if not waveforms:
-                            raise RuntimeError("TTS_EMPTY_OUTPUT")
-                        if writer is None:
-                            sample_rate = int(piece_rate)
-                            writer = sf.SoundFile(
-                                output,
-                                mode="w",
-                                samplerate=sample_rate,
-                                channels=1,
-                                format="WAV",
-                                subtype="PCM_16",
-                            )
-                        elif int(piece_rate) != sample_rate:
-                            raise RuntimeError("TTS_SAMPLE_RATE_CHANGED")
-                        writer.write(waveforms[0])
-                    finally:
-                        waveforms = None
-                        release_accelerator_cache(torch)
+                with contextlib.redirect_stdout(sys.stderr):
+                    waveforms, piece_rate = model.generate_voice_clone(
+                        text=texts[0] if len(texts) == 1 else texts,
+                        language="Chinese" if len(texts) == 1 else ["Chinese"] * len(texts),
+                        voice_clone_prompt=clone_prompt,
+                        non_streaming_mode=True,
+                    )
+                if not waveforms or len(waveforms) != len(outputs):
+                    raise RuntimeError("TTS_EMPTY_OUTPUT")
+                sample_rate = int(piece_rate)
+                items: list[dict[str, float | int]] = []
+                for output, waveform in zip(outputs, waveforms, strict=True):
+                    sf.write(
+                        output,
+                        waveform,
+                        sample_rate,
+                        format="WAV",
+                        subtype="PCM_16",
+                    )
+                    info = sf.info(output)
+                    if info.frames <= 0 or info.samplerate != sample_rate:
+                        raise RuntimeError("TTS_EMPTY_OUTPUT")
+                    items.append({
+                        "duration_seconds": info.frames / info.samplerate,
+                        "sample_rate": sample_rate,
+                    })
             finally:
-                if writer is not None:
-                    writer.close()
-            info = sf.info(output)
-            if info.frames <= 0 or info.samplerate <= 0:
-                output.unlink(missing_ok=True)
-                respond({"status": "error", "code": "TTS_EMPTY_OUTPUT"})
-                continue
-            respond({
-                "status": "ok",
-                "duration_seconds": info.frames / info.samplerate,
-                "sample_rate": sample_rate,
-            })
+                waveforms = None
+                release_accelerator_cache(torch)
+
+            if len(items) == 1:
+                respond({"status": "ok", **items[0]})
+            else:
+                respond({"status": "ok", "items": items})
         except Exception as error:
-            if output is not None:
+            for output in outputs:
                 output.unlink(missing_ok=True)
             respond(error_response(error, "generate"))
 

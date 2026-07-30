@@ -9,6 +9,7 @@ LEGACY_DATA_DIRECTORY = "听见书页"
 APP_VERSION = "0.4.0"
 AGENT_PORT = 17832
 DEFAULT_QWEN_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+DEFAULT_MLX_MODEL = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
 
 
 def data_root() -> Path:
@@ -30,6 +31,13 @@ def qwen_python() -> Path:
         # managed base interpreter and silently drops the venv's site-packages.
         return Path(configured).expanduser().absolute()
     return data_root() / "qwen-runtime/bin/python"
+
+
+def mlx_python() -> Path:
+    configured = os.environ.get("AUDIOBOOK_MLX_PYTHON")
+    if configured:
+        return Path(configured).expanduser().absolute()
+    return data_root() / "mlx-runtime/bin/python"
 
 
 def models_root() -> Path:

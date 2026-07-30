@@ -62,6 +62,8 @@ class QwenProcessGenerator:
         idle_seconds: float = 240,
         process_factory: ProcessFactory | None = None,
         stderr_path: Path | None = None,
+        batch_size: int = 1,
+        backend_name: str = "qwen",
     ) -> None:
         self.python_path = python_path
         self.worker_script = worker_script
@@ -71,6 +73,10 @@ class QwenProcessGenerator:
         self.idle_seconds = idle_seconds
         self.stderr_path = stderr_path or worker_script.parent / "qwen-stderr.log"
         self.process_factory = process_factory
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        self.batch_size = batch_size
+        self.backend_name = backend_name
         self._process: WorkerProcess | None = None
         self._idle_timer: threading.Timer | None = None
         self._lock = threading.Lock()
@@ -98,7 +104,9 @@ class QwenProcessGenerator:
             sample_rate = 0
             if on_progress:
                 on_progress(0, len(pieces), 0.0)
-            for index, piece in enumerate(pieces):
+            index = 0
+            while index < len(pieces):
+                piece = pieces[index]
                 part_path = parts_root / f"{index:04d}.wav"
                 existing = completed.get(index)
                 if (
@@ -107,48 +115,89 @@ class QwenProcessGenerator:
                     and part_path.is_file()
                     and part_path.stat().st_size > 44
                 ):
-                    generated = GeneratedAudio(
+                    generated_items = [GeneratedAudio(
                         duration_seconds=float(existing["duration_seconds"]),
                         sample_rate=int(existing["sample_rate"]),
-                    )
+                    )]
+                    batch_indices = [index]
                 else:
-                    part_path.unlink(missing_ok=True)
-                    generated = self._generate_piece(piece, part_path)
-                if sample_rate and generated.sample_rate != sample_rate:
-                    raise GenerationError(
-                        "AUDIO_VALIDATION_FAILED",
-                        "语音模型在同一段中返回了不同采样率。",
+                    batch_indices = []
+                    cursor = index
+                    while cursor < len(pieces) and len(batch_indices) < self.batch_size:
+                        cursor_record = completed.get(cursor)
+                        cursor_path = parts_root / f"{cursor:04d}.wav"
+                        if (
+                            cursor_record
+                            and cursor_record.get("text_sha256")
+                            == sha256(pieces[cursor].encode("utf-8")).hexdigest()
+                            and cursor_path.is_file()
+                            and cursor_path.stat().st_size > 44
+                        ):
+                            break
+                        batch_indices.append(cursor)
+                        cursor += 1
+                    batch_paths = [parts_root / f"{value:04d}.wav" for value in batch_indices]
+                    for path in batch_paths:
+                        path.unlink(missing_ok=True)
+                    generated_items = self._generate_pieces(
+                        [pieces[value] for value in batch_indices],
+                        batch_paths,
                     )
-                sample_rate = generated.sample_rate
-                total_duration += generated.duration_seconds
-                record: dict[str, str | int | float] = {
-                    "index": index,
-                    "text_sha256": sha256(piece.encode("utf-8")).hexdigest(),
-                    "duration_seconds": generated.duration_seconds,
-                    "sample_rate": generated.sample_rate,
-                }
-                records.append(record)
-                self._write_piece_checkpoint(parts_root, fingerprint, records)
-                if on_progress:
-                    on_progress(index + 1, len(pieces), total_duration)
+
+                for completed_index, generated in zip(
+                    batch_indices,
+                    generated_items,
+                    strict=True,
+                ):
+                    if sample_rate and generated.sample_rate != sample_rate:
+                        raise GenerationError(
+                            "AUDIO_VALIDATION_FAILED",
+                            "语音模型在同一段中返回了不同采样率。",
+                        )
+                    sample_rate = generated.sample_rate
+                    total_duration += generated.duration_seconds
+                    record: dict[str, str | int | float] = {
+                        "index": completed_index,
+                        "text_sha256": sha256(
+                            pieces[completed_index].encode("utf-8")
+                        ).hexdigest(),
+                        "duration_seconds": generated.duration_seconds,
+                        "sample_rate": generated.sample_rate,
+                    }
+                    records.append(record)
+                    self._write_piece_checkpoint(parts_root, fingerprint, records)
+                    if on_progress:
+                        on_progress(completed_index + 1, len(pieces), total_duration)
+                index += len(batch_indices)
             self._concatenate_parts(
                 [parts_root / f"{index:04d}.wav" for index in range(len(pieces))],
                 output_wav,
             )
             return GeneratedAudio(duration_seconds=total_duration, sample_rate=sample_rate)
 
-    def _generate_piece(self, text: str, output_wav: Path) -> GeneratedAudio:
+    def _generate_pieces(
+        self,
+        texts: list[str],
+        output_wavs: list[Path],
+    ) -> list[GeneratedAudio]:
+        if not texts or len(texts) != len(output_wavs):
+            raise ValueError("texts and output_wavs must be non-empty and aligned")
         process = self._ensure_process()
         if process.stdin is None or process.stdout is None:
             self._stop_locked()
             raise GenerationError("TTS_WORKER_BROKEN", "语音模型进程无法通信。")
-        request = {
+        request: dict[str, Any] = {
             "command": "generate",
             "reference_audio": str(self.reference_audio),
             "reference_text": self.reference_text,
-            "text": text,
-            "output": str(output_wav),
         }
+        if len(texts) == 1:
+            request.update({"text": texts[0], "output": str(output_wavs[0])})
+        else:
+            request.update({
+                "texts": texts,
+                "outputs": [str(path) for path in output_wavs],
+            })
         try:
             process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
             process.stdin.flush()
@@ -201,11 +250,20 @@ class QwenProcessGenerator:
                 details=details,
             )
         self._arm_idle_timer()
+        raw_items = response.get("items") if len(texts) > 1 else [response]
         try:
-            generated = GeneratedAudio(
-                duration_seconds=float(response["duration_seconds"]),
-                sample_rate=int(response["sample_rate"]),
-            )
+            if not isinstance(raw_items, list) or len(raw_items) != len(texts):
+                raise ValueError("worker returned the wrong item count")
+            generated_items = [
+                GeneratedAudio(
+                    duration_seconds=float(item["duration_seconds"]),
+                    sample_rate=int(item["sample_rate"]),
+                )
+                for item in raw_items
+                if isinstance(item, dict)
+            ]
+            if len(generated_items) != len(texts):
+                raise ValueError("worker returned malformed items")
         except (KeyError, TypeError, ValueError) as error:
             self._stop_locked()
             raise GenerationError(
@@ -213,9 +271,9 @@ class QwenProcessGenerator:
                 "语音模型返回了无法识别的结果，完整响应已写入本机日志。",
                 details={"response": response, "stderr_tail": self._stderr_tail()},
             ) from error
-        if not output_wav.is_file() or output_wav.stat().st_size <= 44:
+        if any(not path.is_file() or path.stat().st_size <= 44 for path in output_wavs):
             raise GenerationError("TTS_EMPTY_OUTPUT", "语音模型没有保存有效的小批次音频。")
-        return generated
+        return generated_items
 
     def discard_checkpoint(self, output_wav: Path) -> None:
         shutil.rmtree(output_wav.with_suffix(".parts"), ignore_errors=True)
@@ -230,6 +288,8 @@ class QwenProcessGenerator:
             json.dumps(
                 {
                     "model": self.model,
+                    "backend": self.backend_name,
+                    "batch_size": self.batch_size,
                     "reference_audio": audio_identity,
                     "reference_text": self.reference_text,
                     "text": text,
@@ -321,14 +381,17 @@ class QwenProcessGenerator:
             assert self._process is not None
             return self._process
         if not self.python_path.is_file() and self.process_factory is None:
+            environment_code = (
+                "MLX_ENV_MISSING" if self.backend_name == "mlx" else "QWEN_ENV_MISSING"
+            )
             raise GenerationError(
-                "QWEN_ENV_MISSING",
-                "Qwen 运行环境不存在，请在系统状态中运行自动修复。",
+                environment_code,
+                "本机声音模型环境不存在，请在系统状态中运行自动修复。",
                 details={"python_path": str(self.python_path)},
             )
         if not self.worker_script.is_file() and self.process_factory is None:
             raise GenerationError(
-                "QWEN_WORKER_MISSING",
+                "TTS_WORKER_MISSING",
                 "语音生成组件不完整，请重新安装。",
                 details={"worker_script": str(self.worker_script)},
             )
@@ -355,8 +418,9 @@ class QwenProcessGenerator:
     def _user_message(code: str) -> str:
         messages = {
             "QWEN_DEPENDENCY_MISSING": "Qwen 依赖不完整，请在系统状态中运行自动修复。",
+            "MLX_DEPENDENCY_MISSING": "MLX 依赖不完整，请在系统状态中运行自动修复。",
             "MODEL_NOT_FOUND": "Qwen 模型尚未下载，请在系统状态中运行自动修复。",
-            "MODEL_LOAD_FAILED": "Qwen 模型加载失败，完整原因已写入本机日志。",
+            "MODEL_LOAD_FAILED": "声音模型加载失败，完整原因已写入本机日志。",
             "MPS_UNAVAILABLE": "Apple MPS 不可用，已停止本次生成以避免异常。",
             "OUT_OF_MEMORY": "可用内存不足，关闭其他大型应用后会自动重试。",
             "REFERENCE_TEXT_REQUIRED": "参考文字为空，请重新设置声音。",

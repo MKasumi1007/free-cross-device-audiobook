@@ -8,7 +8,13 @@ from typing import Callable, Protocol
 
 from .generation import SingleTaskLock
 from .error_reporting import AgentOperationError, completed_process_details, reporter
-from .paths import logs_root, qwen_python
+from .paths import (
+    DEFAULT_MLX_MODEL,
+    DEFAULT_QWEN_MODEL,
+    logs_root,
+    mlx_python,
+    qwen_python,
+)
 from .qwen_process import QwenProcessGenerator
 from .voice import VoiceError, VoiceProfile, VoiceRegistry
 
@@ -163,6 +169,31 @@ class VoicePreviewService:
 
 
 def default_qwen_factory(profile: VoiceProfile) -> QwenProcessGenerator:
+    backend = os.environ.get("AUDIOBOOK_TTS_BACKEND", "qwen").strip().lower()
+    if backend == "mlx":
+        python_path = mlx_python()
+        if not python_path.is_file():
+            raise VoiceError("MLX_ENV_MISSING", "本机 MLX 声音模型环境尚未准备好。")
+        try:
+            batch_size = max(
+                1,
+                min(2, int(os.environ.get("AUDIOBOOK_TTS_BATCH_SIZE", "2"))),
+            )
+        except ValueError:
+            batch_size = 2
+        return QwenProcessGenerator(
+            python_path=python_path,
+            worker_script=Path(__file__).with_name("mlx_worker.py"),
+            reference_audio=Path(profile.audio_path),
+            reference_text=profile.transcript,
+            model=os.environ.get("AUDIOBOOK_MLX_MODEL", DEFAULT_MLX_MODEL),
+            stderr_path=logs_root() / "mlx-stderr.log",
+            batch_size=batch_size,
+            backend_name="mlx",
+        )
+    if backend != "qwen":
+        raise VoiceError("TTS_BACKEND_INVALID", "声音引擎设置无效，请运行自动修复。")
+
     python_path = qwen_python()
     if not python_path.is_file():
         raise VoiceError("QWEN_ENV_MISSING", "本机声音模型环境尚未准备好。")
@@ -171,5 +202,7 @@ def default_qwen_factory(profile: VoiceProfile) -> QwenProcessGenerator:
         worker_script=Path(__file__).with_name("qwen_worker.py"),
         reference_audio=Path(profile.audio_path),
         reference_text=profile.transcript,
+        model=os.environ.get("AUDIOBOOK_QWEN_MODEL", DEFAULT_QWEN_MODEL),
         stderr_path=logs_root() / "qwen-stderr.log",
+        backend_name="qwen",
     )

@@ -57,9 +57,13 @@ def test_third_party_stdout_cannot_corrupt_worker_protocol(tmp_path: Path) -> No
     (fakes / "qwen_tts.py").write_text(
         "print('library banner on stdout')\n"
         "class _Model:\n"
+        " def create_voice_clone_prompt(self, **kwargs):\n"
+        "  print('reference prompt on stdout')\n"
+        "  return {'cached': True}\n"
         " def generate_voice_clone(self, **kwargs):\n"
         "  print('generation progress on stdout')\n"
-        "  return [[0.0, 0.0, 0.0]], 24000\n"
+        "  texts = kwargs['text'] if isinstance(kwargs['text'], list) else [kwargs['text']]\n"
+        "  return [[0.0, 0.0, 0.0] for _ in texts], 24000\n"
         "class Qwen3TTSModel:\n"
         " @staticmethod\n"
         " def from_pretrained(*args, **kwargs): return _Model()\n",
@@ -67,10 +71,7 @@ def test_third_party_stdout_cannot_corrupt_worker_protocol(tmp_path: Path) -> No
     )
     (fakes / "soundfile.py").write_text(
         "from pathlib import Path\n"
-        "class SoundFile:\n"
-        " def __init__(self, path, **kwargs): self.path = Path(path); self.path.write_bytes(b'')\n"
-        " def write(self, data): self.path.write_bytes(self.path.read_bytes() + b'WAV')\n"
-        " def close(self): pass\n"
+        "def write(path, data, samplerate, **kwargs): Path(path).write_bytes(b'WAV')\n"
         "class _Info:\n"
         " frames = 3\n"
         " samplerate = 24000\n"
@@ -105,5 +106,78 @@ def test_third_party_stdout_cannot_corrupt_worker_protocol(tmp_path: Path) -> No
         "sample_rate": 24000,
     }
     assert "library banner" in result.stderr
+    assert result.stderr.count("reference prompt") == 1
     assert "generation progress" in result.stderr
     assert output.read_bytes() == b"WAV"
+
+
+def test_reference_prompt_is_cached_and_two_items_can_share_one_batch(tmp_path: Path) -> None:
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    (fakes / "torch.py").write_text(
+        "class _Mps:\n"
+        " @staticmethod\n"
+        " def is_available(): return False\n"
+        " @staticmethod\n"
+        " def empty_cache(): pass\n"
+        "class _Backends: mps = _Mps()\n"
+        "backends = _Backends()\n"
+        "float32 = 'float32'\n"
+        "bfloat16 = 'bfloat16'\n",
+        encoding="utf-8",
+    )
+    (fakes / "qwen_tts.py").write_text(
+        "class _Model:\n"
+        " def create_voice_clone_prompt(self, **kwargs):\n"
+        "  print('PROMPT')\n"
+        "  return {'cached': True}\n"
+        " def generate_voice_clone(self, **kwargs):\n"
+        "  texts = kwargs['text'] if isinstance(kwargs['text'], list) else [kwargs['text']]\n"
+        "  return [[0.0, 0.0] for _ in texts], 24000\n"
+        "class Qwen3TTSModel:\n"
+        " @staticmethod\n"
+        " def from_pretrained(*args, **kwargs): return _Model()\n",
+        encoding="utf-8",
+    )
+    (fakes / "soundfile.py").write_text(
+        "from pathlib import Path\n"
+        "def write(path, data, samplerate, **kwargs): Path(path).write_bytes(b'WAV')\n"
+        "class _Info:\n"
+        " frames = 2\n"
+        " samplerate = 24000\n"
+        "def info(path): return _Info()\n",
+        encoding="utf-8",
+    )
+    reference = tmp_path / "reference.wav"
+    reference.write_bytes(b"WAV")
+    outputs = [tmp_path / "one.wav", tmp_path / "two.wav"]
+    requests = [
+        {
+            "command": "generate",
+            "reference_audio": str(reference),
+            "reference_text": "参考文字",
+            "text": "先生成一次",
+            "output": str(tmp_path / "warm.wav"),
+        },
+        {
+            "command": "generate",
+            "reference_audio": str(reference),
+            "reference_text": "参考文字",
+            "texts": ["第一段", "第二段"],
+            "outputs": [str(path) for path in outputs],
+        },
+    ]
+    result = subprocess.run(
+        [sys.executable, str(Path(mac_agent.qwen_worker.__file__)), "--model", "fake"],
+        input="\n".join(json.dumps(value, ensure_ascii=False) for value in requests) + "\n",
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(fakes)},
+    )
+
+    responses = [json.loads(line) for line in result.stdout.splitlines()]
+    assert responses[0]["status"] == "ok"
+    assert len(responses[1]["items"]) == 2
+    assert result.stderr.count("PROMPT") == 1
+    assert all(path.read_bytes() == b"WAV" for path in outputs)
