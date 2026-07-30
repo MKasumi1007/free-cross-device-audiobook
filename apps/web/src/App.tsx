@@ -41,6 +41,7 @@ import { registerCurrentDevice } from "./device";
 import { classifyFirebaseError, type SyncError } from "./firebase-errors";
 import { firebaseIsConfigured } from "./firebase";
 import { GenerationQueue } from "./GenerationQueue";
+import { chapterDirectoryStatus } from "./chapter-directory-status";
 import {
   pairMacAgent,
   revokeMacAgent,
@@ -371,7 +372,8 @@ export function App() {
   const effectiveVoiceVersion = voiceStatus?.confirmed && voiceStatus.voice_version
     ? voiceStatus.voice_version
     : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";
-  const queuedChapterCount = buildGenerationQueue(generationTasks, visibleBooks)
+  const generationQueue = buildGenerationQueue(generationTasks, visibleBooks);
+  const queuedChapterCount = generationQueue
     .filter((item) => item.status !== "COMPLETED" && item.status !== "REMOVED")
     .length;
 
@@ -1001,17 +1003,62 @@ export function App() {
               </div>
             )}
             <nav className="toc-list" aria-label="目录">
-              {selectedBook.chapters.map((chapter) => (
-                <button
-                  key={chapter.chapter_id}
-                  className={chapter.chapter_id === selectedChapter?.chapter_id ? "is-active" : ""}
-                  onClick={() => openChapter(chapter)}
-                >
-                  <span>{String(chapter.order + 1).padStart(2, "0")}</span>
-                  <b>{chapter.title}</b>
-                  <small>{chapterPreview(chapter)}</small>
-                </button>
-              ))}
+              {selectedBook.chapters.map((chapter) => {
+                const status = chapterDirectoryStatus(
+                  selectedBook,
+                  chapter,
+                  audioChunks,
+                  generationQueue,
+                );
+                const statusDescription = [
+                  status.playable ? "可听" : "",
+                  status.generation_label || (!status.playable ? "尚未生成" : ""),
+                ].filter(Boolean).join("，");
+                return (
+                  <button
+                    key={chapter.chapter_id}
+                    className={chapter.chapter_id === selectedChapter?.chapter_id ? "is-active" : ""}
+                    onClick={() => openChapter(chapter)}
+                    aria-label={`${chapter.title}，${statusDescription}`}
+                  >
+                    <span className="toc-chapter-number">
+                      {String(chapter.order + 1).padStart(2, "0")}
+                    </span>
+                    <span className="toc-chapter-copy">
+                      <b>{chapter.title}</b>
+                      <small>{chapterPreview(chapter)}</small>
+                      {status.progress_percent !== null
+                        && status.progress_percent > 0
+                        && status.progress_percent < 100
+                        && (
+                          <span
+                            className={`toc-progress toc-progress--${status.generation_tone}`}
+                            role="progressbar"
+                            aria-label={`${chapter.title}生成进度`}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={status.progress_percent}
+                          >
+                            <span style={{ width: `${status.progress_percent}%` }} />
+                          </span>
+                        )}
+                    </span>
+                    <span className="toc-chapter-status" aria-hidden="true">
+                      {status.playable && (
+                        <span className="toc-status-badge toc-status-badge--playable">可听</span>
+                      )}
+                      {status.generation_label && (
+                        <span className={`toc-status-badge toc-status-badge--${status.generation_tone}`}>
+                          {status.generation_label}
+                        </span>
+                      )}
+                      {!status.playable && !status.generation_label && (
+                        <span className="toc-status-badge toc-status-badge--none">尚未生成</span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
             </nav>
           </aside>
 
