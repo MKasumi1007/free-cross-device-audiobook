@@ -42,9 +42,21 @@ test("plays, navigates, bookmarks, and switches books without mixing state", asy
   await expect(page.getByRole("status")).toContainText("登录同步后");
 
   await page.getByLabel("返回书架").click();
-  await page.getByRole("button", { name: /山窗小札 · 第二册/ }).click();
+  await page.locator(".book-card").filter({ hasText: "山窗小札 · 第二册" }).click();
   await expect(page.getByRole("heading", { name: "山窗小札 · 第二册" }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "播放" })).toBeEnabled();
+});
+
+test("hides and restores a book from the shelf", async ({ page }) => {
+  await page.goto("./?e2e=player");
+  await page.getByLabel("返回书架").click();
+  await page.getByRole("button", { name: "管理《山窗小札》" }).click();
+  await page.getByRole("menuitem", { name: "从这台设备的书架隐藏" }).click();
+
+  await expect(page.getByRole("button", { name: /已隐藏书籍 1/ })).toBeVisible();
+  await page.getByRole("button", { name: /已隐藏书籍 1/ }).click();
+  await page.getByRole("button", { name: "恢复" }).click();
+  await expect(page.locator(".book-card").filter({ hasText: "山窗小札" }).first()).toBeVisible();
 });
 
 test("restores a deliberately selected reading position after reload", async ({ page }) => {
