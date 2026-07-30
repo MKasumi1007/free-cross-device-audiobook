@@ -21,6 +21,7 @@ import {
   loadCloudProgress,
   loadRemoteBook,
   markBookListened,
+  requestBookDeletion,
   requestAudioRepair,
   saveBookmark,
   saveProgressOptimistically,
@@ -53,13 +54,18 @@ import { firstPlayableSegmentIdForChapter } from "./player";
 import {
   bookMetadataNeedsSync,
   cacheCloudBooks,
+  deleteLocalBook,
+  hideBook,
   loadBooks,
   loadCachedCloudBooks,
+  loadHiddenBooks,
   loadPendingProgress,
   loadProgress,
   markBookMetadataSynced,
   saveBook,
   saveProgress,
+  unhideBook,
+  type HiddenBook,
   type LocalProgress,
 } from "./storage";
 import { cloudSyncIsPaused, cloudSyncPauseMessage } from "./usage";
@@ -146,9 +152,16 @@ function cloudSummaryFor(book: ParsedBook, cloudBooks: CloudBookSummary[]): Clou
   return cloudBooks.find((cloudBook) => cloudBook.book_id === book.book_id);
 }
 
+interface BookRemovalTarget {
+  book_id: string;
+  title: string;
+  author: string;
+}
+
 export function App() {
   const [books, setBooks] = useState<ParsedBook[]>([]);
   const [cloudBooks, setCloudBooks] = useState<CloudBookSummary[]>([]);
+  const [hiddenBooks, setHiddenBooks] = useState<HiddenBook[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [selectedBookId, setSelectedBookId] = useState("");
   const [selectedChapterId, setSelectedChapterId] = useState("");
@@ -161,6 +174,11 @@ export function App() {
   const [showAudioManager, setShowAudioManager] = useState(false);
   const [showGenerationQueue, setShowGenerationQueue] = useState(false);
   const [showSystemStatus, setShowSystemStatus] = useState(false);
+  const [showHiddenBooks, setShowHiddenBooks] = useState(false);
+  const [bookMenuId, setBookMenuId] = useState("");
+  const [deletionTarget, setDeletionTarget] = useState<BookRemovalTarget | null>(null);
+  const [deletionStep, setDeletionStep] = useState<1 | 2>(1);
+  const [deletionConfirmation, setDeletionConfirmation] = useState("");
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus | null>(null);
   const [voicePreviewObjectUrl, setVoicePreviewObjectUrl] = useState("");
@@ -206,12 +224,15 @@ export function App() {
 
   useEffect(() => {
     let active = true;
-    loadBooks()
-      .then((items) => {
+    Promise.all([loadBooks(), loadHiddenBooks()])
+      .then(([items, hidden]) => {
         if (!active) return;
-        const visibleBooks = e2eBooks(items);
-        setBooks(visibleBooks);
-        setSelectedBookId((current) => current || visibleBooks[0]?.book_id || "");
+        const loadedBooks = e2eBooks(items);
+        const hiddenIds = new Set(hidden.map((book) => book.book_id));
+        const firstVisible = loadedBooks.find((book) => !hiddenIds.has(book.book_id));
+        setBooks(loadedBooks);
+        setHiddenBooks(hidden);
+        setSelectedBookId((current) => current || firstVisible?.book_id || "");
       })
       .catch(() => setNotice("本地书架暂时打不开，请刷新页面重试。"))
       .finally(() => active && setBusy(false));
@@ -233,8 +254,11 @@ export function App() {
       return;
     }
     let active = true;
+    let receivedLiveBooks = false;
     let unsubscribe: () => void = () => {};
-    void loadCachedCloudBooks(user.uid).then((cached) => active && setCloudBooks(cached));
+    void loadCachedCloudBooks(user.uid).then((cached) => {
+      if (active && !receivedLiveBooks) setCloudBooks(cached);
+    });
     void registerCurrentDevice(user.uid).catch((error) => handleSyncError(classifyFirebaseError(error)));
     void (async () => {
       for (const book of books) {
@@ -245,6 +269,7 @@ export function App() {
     })().catch((error) => setNotice(classifyFirebaseError(error).message));
     unsubscribe = watchCloudBooks(user.uid, (items) => {
       if (!active) return;
+      receivedLiveBooks = true;
       setCloudBooks(items);
       void cacheCloudBooks(user.uid, items);
     }, handleSyncError);
@@ -333,7 +358,10 @@ export function App() {
     };
   }, [showVoice, voiceStatus?.preview_available, voiceStatus?.voice_version]);
 
-  const selectedBook = books.find((book) => book.book_id === selectedBookId);
+  const hiddenBookIds = new Set(hiddenBooks.map((book) => book.book_id));
+  const visibleBooks = books.filter((book) => !hiddenBookIds.has(book.book_id));
+  const visibleCloudBooks = cloudBooks.filter((book) => !hiddenBookIds.has(book.book_id));
+  const selectedBook = visibleBooks.find((book) => book.book_id === selectedBookId);
   const selectedChapter = selectedBook?.chapters.find((chapter) => chapter.chapter_id === selectedChapterId)
     ?? selectedBook?.chapters[0];
   const activeMac = workerLinks.find((link) => !link.revoked_at);
@@ -343,7 +371,7 @@ export function App() {
   const effectiveVoiceVersion = voiceStatus?.confirmed && voiceStatus.voice_version
     ? voiceStatus.voice_version
     : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";
-  const queuedChapterCount = buildGenerationQueue(generationTasks, books)
+  const queuedChapterCount = buildGenerationQueue(generationTasks, visibleBooks)
     .filter((item) => item.status !== "COMPLETED" && item.status !== "REMOVED")
     .length;
 
@@ -544,6 +572,72 @@ export function App() {
     }
   }
 
+  async function hideFromShelf(target: BookRemovalTarget) {
+    try {
+      await hideBook({
+        book_id: target.book_id,
+        title: target.title,
+        author: target.author,
+      });
+      setHiddenBooks((current) => [{
+        book_id: target.book_id,
+        title: target.title,
+        author: target.author,
+        hidden_at: new Date().toISOString(),
+      }, ...current.filter((book) => book.book_id !== target.book_id)]);
+      if (selectedBookId === target.book_id) setSelectedBookId("");
+      setBookMenuId("");
+      setNotice(`《${target.title}》已从这台设备的书架隐藏，可在“已隐藏书籍”中恢复。`);
+    } catch {
+      setNotice("这本书暂时无法隐藏，请刷新后再试。");
+    }
+  }
+
+  async function restoreHiddenBook(book: HiddenBook) {
+    try {
+      await unhideBook(book.book_id);
+      setHiddenBooks((current) => current.filter((item) => item.book_id !== book.book_id));
+      setNotice(`《${book.title}》已恢复到书架。`);
+    } catch {
+      setNotice("这本书暂时无法恢复，请刷新后再试。");
+    }
+  }
+
+  function beginPermanentDeletion(target: BookRemovalTarget) {
+    setBookMenuId("");
+    setDeletionTarget(target);
+    setDeletionStep(1);
+    setDeletionConfirmation("");
+  }
+
+  async function permanentlyDeleteBook() {
+    if (!user || !deletionTarget || deletionConfirmation !== "永久删除") return;
+    const target = deletionTarget;
+    setBusy(true);
+    try {
+      const result = await requestBookDeletion(user.uid, target.book_id);
+      await deleteLocalBook(target.book_id, user.uid);
+      setBooks((current) => current.filter((book) => book.book_id !== target.book_id));
+      setCloudBooks((current) => current.filter((book) => book.book_id !== target.book_id));
+      setHiddenBooks((current) => current.filter((book) => book.book_id !== target.book_id));
+      setSelectedBookId("");
+      setDeletionTarget(null);
+      setDeletionConfirmation("");
+      const cleanup = result.queued_audio_chunks > 0
+        ? `，并已安排清理 ${result.queued_audio_chunks} 段音频`
+        : "";
+      setNotice(
+        macOnline
+          ? `《${target.title}》已从账号永久移除${cleanup}。`
+          : `《${target.title}》已从账号移除${cleanup}；Mac 开机后会完成本机文件清理。`,
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "永久删除没有完成，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function logIn() {
     try {
       await signInWithGoogle();
@@ -728,7 +822,9 @@ export function App() {
     }, true);
   }
 
-  const cloudOnlyBooks = cloudBooks.filter((cloudBook) => !books.some((book) => book.book_id === cloudBook.book_id));
+  const cloudOnlyBooks = visibleCloudBooks.filter(
+    (cloudBook) => !books.some((book) => book.book_id === cloudBook.book_id),
+  );
 
   return (
     <div className="app-shell">
@@ -776,33 +872,91 @@ export function App() {
               管理已生成音频
             </button>
           )}
+          {hiddenBooks.length > 0 && (
+            <button className="shelf-hidden-button" onClick={() => setShowHiddenBooks(true)}>
+              已隐藏书籍 {hiddenBooks.length}
+            </button>
+          )}
           <section className="book-grid" aria-label="书架">
-            {books.map((book, index) => (
-              <button
-                className={`book-card book-card--tone-${index % 4}`}
-                key={book.book_id}
-                onClick={() => setSelectedBookId(book.book_id)}
-              >
-                <span className="book-spine" />
-                <span className="book-format">{book.source_format}</span>
-                <span className="book-title">{book.title}</span>
-                <span className="book-author">{book.author || "作者未注明"}</span>
-                <span className="book-meta">{book.chapters.length} 章 · {cloudSummaryFor(book, cloudBooks) ? (book.publication_mode === "LOCAL_ONLY" ? "账号私有" : "已同步") : book.publication_mode === "LOCAL_ONLY" ? "等待私有同步" : "等待同步"}</span>
-              </button>
-            ))}
-            {cloudOnlyBooks.map((book, index) => (
-              <button
-                className={`book-card book-card--cloud book-card--tone-${(books.length + index) % 4}`}
-                key={book.book_id}
-                onClick={() => void openRemoteBook(book)}
-              >
-                <span className="book-spine" />
-                <span className="book-format">{book.source_format}</span>
-                <span className="book-title">{book.title}</span>
-                <span className="book-author">{book.author || "作者未注明"}</span>
-                <span className="book-meta">{book.chapter_count} 章 · {book.publication_mode === "LOCAL_ONLY" ? (book.text_status === "READY" ? "账号私有" : "等待生成") : "云端书架"}</span>
-              </button>
-            ))}
+            {visibleBooks.map((book, index) => {
+              const cloudBook = cloudSummaryFor(book, cloudBooks);
+              const target: BookRemovalTarget = {
+                book_id: book.book_id,
+                title: book.title,
+                author: book.author,
+              };
+              return (
+                <article className="book-card-shell" key={book.book_id}>
+                  <button
+                    className={`book-card book-card--tone-${index % 4}`}
+                    onClick={() => setSelectedBookId(book.book_id)}
+                  >
+                    <span className="book-spine" />
+                    <span className="book-format">{book.source_format}</span>
+                    <span className="book-title">{book.title}</span>
+                    <span className="book-author">{book.author || "作者未注明"}</span>
+                    <span className="book-meta">{book.chapters.length} 章 · {cloudBook ? (book.publication_mode === "LOCAL_ONLY" ? "账号私有" : "已同步") : book.publication_mode === "LOCAL_ONLY" ? "等待私有同步" : "等待同步"}</span>
+                  </button>
+                  <button
+                    className="book-menu-trigger"
+                    aria-label={`管理《${book.title}》`}
+                    aria-expanded={bookMenuId === book.book_id}
+                    onClick={() => setBookMenuId((current) => current === book.book_id ? "" : book.book_id)}
+                  >
+                    ⋯
+                  </button>
+                  {bookMenuId === book.book_id && (
+                    <div className="book-menu" role="menu" aria-label={`《${book.title}》操作`}>
+                      <button role="menuitem" onClick={() => void hideFromShelf(target)}>从这台设备的书架隐藏</button>
+                      {user && cloudBook && book.book_id !== DEMO_BOOK_ID && (
+                        <button className="is-danger" role="menuitem" onClick={() => beginPermanentDeletion(target)}>
+                          永久删除这本书
+                        </button>
+                      )}
+                      <button role="menuitem" onClick={() => setBookMenuId("")}>关闭</button>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+            {cloudOnlyBooks.map((book, index) => {
+              const target: BookRemovalTarget = {
+                book_id: book.book_id,
+                title: book.title,
+                author: book.author,
+              };
+              return (
+                <article className="book-card-shell" key={book.book_id}>
+                  <button
+                    className={`book-card book-card--cloud book-card--tone-${(visibleBooks.length + index) % 4}`}
+                    onClick={() => void openRemoteBook(book)}
+                  >
+                    <span className="book-spine" />
+                    <span className="book-format">{book.source_format}</span>
+                    <span className="book-title">{book.title}</span>
+                    <span className="book-author">{book.author || "作者未注明"}</span>
+                    <span className="book-meta">{book.chapter_count} 章 · {book.publication_mode === "LOCAL_ONLY" ? (book.text_status === "READY" ? "账号私有" : "等待生成") : "云端书架"}</span>
+                  </button>
+                  <button
+                    className="book-menu-trigger"
+                    aria-label={`管理《${book.title}》`}
+                    aria-expanded={bookMenuId === book.book_id}
+                    onClick={() => setBookMenuId((current) => current === book.book_id ? "" : book.book_id)}
+                  >
+                    ⋯
+                  </button>
+                  {bookMenuId === book.book_id && (
+                    <div className="book-menu" role="menu" aria-label={`《${book.title}》操作`}>
+                      <button role="menuitem" onClick={() => void hideFromShelf(target)}>从这台设备的书架隐藏</button>
+                      <button className="is-danger" role="menuitem" onClick={() => beginPermanentDeletion(target)}>
+                        永久删除这本书
+                      </button>
+                      <button role="menuitem" onClick={() => setBookMenuId("")}>关闭</button>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </section>
           {busy && <p className="loading">正在整理书架...</p>}
         </main>
@@ -901,6 +1055,74 @@ export function App() {
           onRepair={(chunk) => void repairAudio(chunk)}
           onNotice={setNotice}
         />
+      )}
+
+      {showHiddenBooks && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="import-modal hidden-books-modal" role="dialog" aria-modal="true" aria-labelledby="hidden-books-title">
+            <span className="modal-kicker">只影响这台设备</span>
+            <h2 id="hidden-books-title">已隐藏书籍</h2>
+            <p>隐藏不会删除正文、音频或阅读位置，随时可以恢复到书架。</p>
+            <div className="hidden-book-list">
+              {hiddenBooks.map((book) => (
+                <article key={book.book_id}>
+                  <span><b>{book.title}</b><small>{book.author || "作者未注明"}</small></span>
+                  <button className="quiet-button" onClick={() => void restoreHiddenBook(book)}>恢复</button>
+                </article>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button className="primary-button" onClick={() => setShowHiddenBooks(false)}>完成</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {deletionTarget && (
+        <div className="modal-backdrop book-delete-backdrop" role="presentation">
+          <section className="import-modal book-delete-modal" role="dialog" aria-modal="true" aria-labelledby="book-delete-title">
+            <span className="modal-kicker">永久删除 · 第 {deletionStep} 步 / 2</span>
+            <h2 id="book-delete-title">删除《{deletionTarget.title}》？</h2>
+            {deletionStep === 1 ? (
+              <>
+                <p>这会停止该书正在运行和等待中的生成任务，并删除账号中的正文、阅读位置、书签和全部音频。Mac 中保存的这本书副本也会清理。</p>
+                <div className="delete-impact-list" aria-label="将删除的内容">
+                  <span>书籍正文与章节</span>
+                  <span>阅读位置与书签</span>
+                  <span>已生成音频与待生成任务</span>
+                  <span>Mac 中的本机书籍副本</span>
+                </div>
+                <p className="delete-warning">此操作无法撤销；你的声音样本和其他书籍不会受到影响。</p>
+                <div className="modal-actions">
+                  <button className="quiet-button" onClick={() => setDeletionTarget(null)}>取消</button>
+                  <button className="danger-button" onClick={() => setDeletionStep(2)}>继续核对</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p>为防止误触，请在下方输入“永久删除”。</p>
+                <input
+                  className="delete-confirmation-input"
+                  value={deletionConfirmation}
+                  onChange={(event) => setDeletionConfirmation(event.target.value)}
+                  placeholder="永久删除"
+                  autoComplete="off"
+                  autoFocus
+                />
+                <div className="modal-actions">
+                  <button className="quiet-button" onClick={() => setDeletionStep(1)} disabled={busy}>返回</button>
+                  <button
+                    className="danger-button"
+                    onClick={() => void permanentlyDeleteBook()}
+                    disabled={busy || deletionConfirmation !== "永久删除"}
+                  >
+                    {busy ? "正在安全删除..." : "确认永久删除"}
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
       )}
 
       {showImport && (
@@ -1006,9 +1228,9 @@ export function App() {
       {showAudioManager && (user || E2E_PLAYER_MODE) && (
         <AudioManager
           ownerUid={user?.uid || "e2e-owner"}
-          books={books}
-          cloudBooks={cloudBooks}
-          initialChunks={E2E_PLAYER_MODE ? books.flatMap(e2eAudioChunks) : undefined}
+          books={visibleBooks}
+          cloudBooks={visibleCloudBooks}
+          initialChunks={E2E_PLAYER_MODE ? visibleBooks.flatMap(e2eAudioChunks) : undefined}
           onClose={() => setShowAudioManager(false)}
           onNotice={setNotice}
         />
@@ -1017,7 +1239,7 @@ export function App() {
       {showGenerationQueue && user && (
         <GenerationQueue
           ownerUid={user.uid}
-          books={books}
+          books={visibleBooks}
           tasks={generationTasks}
           voiceVersion={effectiveVoiceVersion}
           initialBookId={selectedBook?.book_id}

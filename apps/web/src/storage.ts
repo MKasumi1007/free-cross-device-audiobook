@@ -5,11 +5,12 @@ import type { CloudBookSummary } from "./cloud";
 import { demoBook } from "./demo";
 
 const DATABASE = "audiobook-library";
-const VERSION = 2;
+const VERSION = 3;
 const BOOKS = "books";
 const PROGRESS = "progress";
 const CLOUD_BOOKS = "cloud-books";
 const SYNC_MARKERS = "sync-markers";
+const HIDDEN_BOOKS = "hidden-books";
 
 export interface LocalProgress {
   book_id: string;
@@ -34,6 +35,13 @@ interface SyncMarker {
   synced_at: string;
 }
 
+export interface HiddenBook {
+  book_id: string;
+  title: string;
+  author: string;
+  hidden_at: string;
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE, VERSION);
@@ -50,6 +58,9 @@ function openDatabase(): Promise<IDBDatabase> {
       }
       if (!database.objectStoreNames.contains(SYNC_MARKERS)) {
         database.createObjectStore(SYNC_MARKERS, { keyPath: "marker_id" });
+      }
+      if (!database.objectStoreNames.contains(HIDDEN_BOOKS)) {
+        database.createObjectStore(HIDDEN_BOOKS, { keyPath: "book_id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -91,6 +102,61 @@ export async function saveBook(book: ParsedBook): Promise<void> {
   const transaction = database.transaction(BOOKS, "readwrite");
   const completed = transactionDone(transaction);
   await requestResult(transaction.objectStore(BOOKS).put(book));
+  await completed;
+  database.close();
+}
+
+export async function loadHiddenBooks(): Promise<HiddenBook[]> {
+  const database = await openDatabase();
+  const transaction = database.transaction(HIDDEN_BOOKS, "readonly");
+  const completed = transactionDone(transaction);
+  const books = await requestResult(
+    transaction.objectStore(HIDDEN_BOOKS).getAll() as IDBRequest<HiddenBook[]>,
+  );
+  await completed;
+  database.close();
+  return books.sort((left, right) => right.hidden_at.localeCompare(left.hidden_at));
+}
+
+export async function hideBook(book: Pick<HiddenBook, "book_id" | "title" | "author">): Promise<void> {
+  const database = await openDatabase();
+  const transaction = database.transaction(HIDDEN_BOOKS, "readwrite");
+  const completed = transactionDone(transaction);
+  await requestResult(transaction.objectStore(HIDDEN_BOOKS).put({
+    ...book,
+    hidden_at: new Date().toISOString(),
+  } satisfies HiddenBook));
+  await completed;
+  database.close();
+}
+
+export async function unhideBook(bookId: string): Promise<void> {
+  const database = await openDatabase();
+  const transaction = database.transaction(HIDDEN_BOOKS, "readwrite");
+  const completed = transactionDone(transaction);
+  await requestResult(transaction.objectStore(HIDDEN_BOOKS).delete(bookId));
+  await completed;
+  database.close();
+}
+
+export async function deleteLocalBook(bookId: string, ownerUid?: string): Promise<void> {
+  const stores = [BOOKS, PROGRESS, HIDDEN_BOOKS];
+  if (ownerUid) stores.push(CLOUD_BOOKS, SYNC_MARKERS);
+  const database = await openDatabase();
+  const transaction = database.transaction(stores, "readwrite");
+  const completed = transactionDone(transaction);
+  const deletions = [
+    requestResult(transaction.objectStore(BOOKS).delete(bookId)),
+    requestResult(transaction.objectStore(PROGRESS).delete(bookId)),
+    requestResult(transaction.objectStore(HIDDEN_BOOKS).delete(bookId)),
+  ];
+  if (ownerUid) {
+    deletions.push(
+      requestResult(transaction.objectStore(CLOUD_BOOKS).delete(`${ownerUid}:${bookId}`)),
+      requestResult(transaction.objectStore(SYNC_MARKERS).delete(markerId(ownerUid, bookId))),
+    );
+  }
+  await Promise.all(deletions);
   await completed;
   database.close();
 }

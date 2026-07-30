@@ -74,6 +74,26 @@ class CloudDeletion:
 
 
 @dataclass(frozen=True)
+class CloudBookDeletion:
+    owner_uid: str
+    request_id: str
+    book_id: str
+    title: str
+    publication_mode: str
+    status: str
+    attempt_count: int
+    private_text_key: str = ""
+    private_text_parts: int = 0
+    text_asset_id: int | None = None
+    text_asset_url: str = ""
+    lease_owner: str = ""
+    lease_token: str = ""
+    lease_deadline: datetime | None = None
+    retry_not_before: datetime | None = None
+    update_time: str = ""
+
+
+@dataclass(frozen=True)
 class RemoteAudioRecord:
     owner_uid: str
     book_id: str
@@ -170,6 +190,25 @@ class FirestoreWorkerTasks:
         ]
         if not claimable:
             active = self._query_deletions_by_status(owner_uid, ["PROCESSING"])
+            claimable = [
+                item for item in active
+                if item.lease_deadline is not None and item.lease_deadline <= now
+            ]
+        claimable.sort(key=lambda item: item.request_id)
+        return claimable[0] if claimable else None
+
+    def next_book_deletion(self, owner_uid: str) -> CloudBookDeletion | None:
+        requests = self._query_book_deletions_by_status(
+            owner_uid,
+            ["QUEUED", "FAILED_RETRYABLE"],
+        )
+        now = datetime.now(UTC)
+        claimable = [
+            item for item in requests
+            if item.retry_not_before is None or item.retry_not_before <= now
+        ]
+        if not claimable:
+            active = self._query_book_deletions_by_status(owner_uid, ["PROCESSING"])
             claimable = [
                 item for item in active
                 if item.lease_deadline is not None and item.lease_deadline <= now
@@ -327,6 +366,57 @@ class FirestoreWorkerTasks:
             retry_not_before=retry_at,
             update_time=update_time,
         )
+
+    def claim_book_deletion(self, deletion: CloudBookDeletion) -> CloudBookDeletion:
+        identity = self.client.authenticate()
+        lease_token = secrets.token_urlsafe(32)
+        deadline = datetime.now(UTC) + timedelta(seconds=self.LEASE_SECONDS)
+        changes = {
+            "status": "PROCESSING",
+            "attempt_count": deletion.attempt_count + 1,
+            "lease_owner": identity.local_id,
+            "lease_token": lease_token,
+            "lease_deadline": deadline,
+            "retry_not_before": None,
+        }
+        update_time = self._commit_book_deletion_update(deletion, changes)
+        return replace(
+            deletion,
+            status="PROCESSING",
+            attempt_count=deletion.attempt_count + 1,
+            lease_owner=identity.local_id,
+            lease_token=lease_token,
+            lease_deadline=deadline,
+            retry_not_before=None,
+            update_time=update_time,
+        )
+
+    def fail_book_deletion(
+        self,
+        deletion: CloudBookDeletion,
+        *,
+        error_code: str,
+        message: str,
+        retry_at: datetime,
+    ) -> CloudBookDeletion:
+        update_time = self._commit_book_deletion_update(deletion, {
+            "status": "FAILED_RETRYABLE",
+            "error_code": error_code,
+            "error_message": message,
+            "retry_not_before": retry_at,
+        })
+        return replace(
+            deletion,
+            status="FAILED_RETRYABLE",
+            retry_not_before=retry_at,
+            update_time=update_time,
+        )
+
+    def complete_book_deletion(self, deletion: CloudBookDeletion) -> None:
+        self._commit_book_deletion_update(deletion, {
+            "status": "DONE",
+            "completed_at": datetime.now(UTC),
+        })
 
     def complete_deletion(self, deletion: CloudDeletion) -> None:
         identity = self.client.authenticate()
@@ -676,6 +766,45 @@ class FirestoreWorkerTasks:
                 total += max(0.0, float(fields.get("duration_seconds") or 0))
         return total
 
+    def purge_book_records(self, deletion: CloudBookDeletion) -> None:
+        audio_documents = self._query_audio_documents(
+            deletion.owner_uid,
+            [deletion.book_id],
+        )
+        pending = [
+            self._fields(document).get("status")
+            for document in audio_documents
+            if self._fields(document).get("status") != "DELETED"
+        ]
+        if pending:
+            raise GenerationError(
+                "BOOK_AUDIO_DELETION_PENDING",
+                "书籍音频仍在安全删除中，稍后会自动继续。",
+            )
+        task_documents = self._query_generation_documents(
+            deletion.owner_uid,
+            deletion.book_id,
+        )
+        writes = [
+            {
+                "delete": str(document["name"]),
+                "currentDocument": {"updateTime": str(document["updateTime"])},
+            }
+            for document in [*audio_documents, *task_documents]
+            if document.get("name") and document.get("updateTime")
+        ]
+        if not writes:
+            return
+        identity = self.client.authenticate()
+        for offset in range(0, len(writes), 400):
+            self.client._json_request(
+                "清理已删除书籍的任务记录",
+                "POST",
+                self._commit_url(),
+                payload={"writes": writes[offset:offset + 400]},
+                id_token=identity.id_token,
+            )
+
     def _queue_retention_deletion(
         self,
         owner_uid: str,
@@ -865,6 +994,42 @@ class FirestoreWorkerTasks:
         results = value.get("writeResults", [])
         return str(results[0].get("updateTime") or "") if results else ""
 
+    def _commit_book_deletion_update(
+        self,
+        deletion: CloudBookDeletion,
+        changes: dict[str, Any],
+    ) -> str:
+        identity = self.client.authenticate()
+        path = (
+            f"users/{deletion.owner_uid}/bookDeletionRequests/{deletion.request_id}"
+        )
+        fields = {name: self._value(value) for name, value in changes.items()}
+        write: dict[str, Any] = {
+            "update": {"name": self._document_name(path), "fields": fields},
+            "updateMask": {"fieldPaths": list(fields)},
+            "updateTransforms": [
+                {"fieldPath": "updated_at", "setToServerValue": "REQUEST_TIME"}
+            ],
+        }
+        if "completed_at" in changes:
+            fields.pop("completed_at")
+            write["update"]["fields"] = fields
+            write["updateMask"]["fieldPaths"] = list(fields)
+            write["updateTransforms"].append(
+                {"fieldPath": "completed_at", "setToServerValue": "REQUEST_TIME"}
+            )
+        if deletion.update_time:
+            write["currentDocument"] = {"updateTime": deletion.update_time}
+        _, value = self.client._json_request(
+            "更新书籍删除任务",
+            "POST",
+            self._commit_url(),
+            payload={"writes": [write]},
+            id_token=identity.id_token,
+        )
+        results = value.get("writeResults", [])
+        return str(results[0].get("updateTime") or "") if results else ""
+
     def _task(self, owner_uid: str, document: dict[str, Any]) -> CloudTask:
         fields = self._fields(document)
         lease_deadline = fields.get("lease_deadline")
@@ -943,6 +1108,42 @@ class FirestoreWorkerTasks:
             private_timeline_key=str(values.get("private_timeline_key") or ""),
             private_audio_parts=int(values.get("private_audio_parts") or 0),
             private_timeline_parts=int(values.get("private_timeline_parts") or 0),
+            lease_owner=str(values.get("lease_owner") or ""),
+            lease_token=str(values.get("lease_token") or ""),
+            lease_deadline=lease_deadline if isinstance(lease_deadline, datetime) else None,
+            retry_not_before=(
+                retry_not_before if isinstance(retry_not_before, datetime) else None
+            ),
+            update_time=str(document.get("updateTime") or ""),
+        )
+
+    def _book_deletion(
+        self,
+        owner_uid: str,
+        document: dict[str, Any],
+    ) -> CloudBookDeletion:
+        values = self._fields(document)
+        lease_deadline = values.get("lease_deadline")
+        retry_not_before = values.get("retry_not_before")
+        request_id = str(
+            values.get("request_id") or str(document.get("name", "")).rsplit("/", 1)[-1]
+        )
+        return CloudBookDeletion(
+            owner_uid=owner_uid,
+            request_id=request_id,
+            book_id=str(values.get("book_id") or ""),
+            title=str(values.get("title") or ""),
+            publication_mode=str(values.get("publication_mode") or "LOCAL_ONLY"),
+            status=str(values.get("status") or ""),
+            attempt_count=int(values.get("attempt_count") or 0),
+            private_text_key=str(values.get("private_text_key") or ""),
+            private_text_parts=int(values.get("private_text_parts") or 0),
+            text_asset_id=(
+                int(values["text_asset_id"])
+                if values.get("text_asset_id") is not None
+                else None
+            ),
+            text_asset_url=str(values.get("text_asset_url") or ""),
             lease_owner=str(values.get("lease_owner") or ""),
             lease_token=str(values.get("lease_token") or ""),
             lease_deadline=lease_deadline if isinstance(lease_deadline, datetime) else None,
@@ -1077,6 +1278,76 @@ class FirestoreWorkerTasks:
         rows = value if isinstance(value, list) else []
         return [
             self._deletion(owner_uid, row["document"])
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("document"), dict)
+        ]
+
+    def _query_book_deletions_by_status(
+        self,
+        owner_uid: str,
+        statuses: list[str],
+    ) -> list[CloudBookDeletion]:
+        identity = self.client.authenticate()
+        owner_path = f"users/{quote(owner_uid, safe='')}"
+        payload = {
+            "structuredQuery": {
+                "from": [{"collectionId": "bookDeletionRequests"}],
+                "where": {
+                    "fieldFilter": {
+                        "field": {"fieldPath": "status"},
+                        "op": "IN",
+                        "value": {
+                            "arrayValue": {
+                                "values": [self._string(status) for status in statuses],
+                            }
+                        },
+                    }
+                },
+            }
+        }
+        _, value = self.client._json_request(
+            "查询待删除书籍",
+            "POST",
+            f"{self._document_url(owner_path)}:runQuery",
+            payload=payload,
+            id_token=identity.id_token,
+        )
+        rows = value if isinstance(value, list) else []
+        return [
+            self._book_deletion(owner_uid, row["document"])
+            for row in rows
+            if isinstance(row, dict) and isinstance(row.get("document"), dict)
+        ]
+
+    def _query_generation_documents(
+        self,
+        owner_uid: str,
+        book_id: str,
+    ) -> list[dict[str, Any]]:
+        identity = self.client.authenticate()
+        owner_path = f"users/{quote(owner_uid, safe='')}"
+        payload = {
+            "structuredQuery": {
+                "from": [{"collectionId": "generationRequests"}],
+                "where": {
+                    "fieldFilter": {
+                        "field": {"fieldPath": "book_id"},
+                        "op": "EQUAL",
+                        "value": self._string(book_id),
+                    }
+                },
+            }
+        }
+        _, value = self.client._json_request(
+            "查询已删除书籍的生成记录",
+            "POST",
+            f"{self._document_url(owner_path)}:runQuery",
+            payload=payload,
+            id_token=identity.id_token,
+        )
+        rows = value if isinstance(value, list) else []
+        return [
+            row["document"]
             for row in rows
             if isinstance(row, dict) and isinstance(row.get("document"), dict)
         ]

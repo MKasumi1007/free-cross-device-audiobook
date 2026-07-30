@@ -4,12 +4,16 @@ import { demoBook } from "./demo";
 import {
   bookMetadataNeedsSync,
   cacheCloudBooks,
+  deleteLocalBook,
+  hideBook,
   loadCachedCloudBooks,
+  loadHiddenBooks,
   loadPendingProgress,
   loadProgress,
   markBookMetadataSynced,
   saveBook,
   saveProgress,
+  unhideBook,
   type LocalProgress,
 } from "./storage";
 
@@ -79,5 +83,54 @@ describe("IndexedDB 离线恢复", () => {
     await markBookMetadataSynced("owner-a", demoBook);
     expect(await bookMetadataNeedsSync("owner-a", demoBook)).toBe(false);
     expect(await bookMetadataNeedsSync("owner-b", demoBook)).toBe(true);
+  });
+
+  it("隐藏书籍不会删除本机内容，并且可以恢复", async () => {
+    await saveBook(demoBook);
+    await hideBook({
+      book_id: demoBook.book_id,
+      title: demoBook.title,
+      author: demoBook.author,
+    });
+    expect(await loadHiddenBooks()).toMatchObject([{
+      book_id: demoBook.book_id,
+      title: demoBook.title,
+    }]);
+
+    await unhideBook(demoBook.book_id);
+    expect(await loadHiddenBooks()).toEqual([]);
+  });
+
+  it("永久删除会清除正文、进度、缓存、隐藏项和同步标记", async () => {
+    await saveBook(demoBook);
+    await saveProgress({
+      book_id: demoBook.book_id,
+      chapter_id: demoBook.chapters[0].chapter_id,
+      segment_id: demoBook.chapters[0].segments[0].segment_id,
+      updated_at: "2026-07-30T00:00:00.000Z",
+    });
+    await hideBook({
+      book_id: demoBook.book_id,
+      title: demoBook.title,
+      author: demoBook.author,
+    });
+    await cacheCloudBooks("owner-a", [{
+      book_id: demoBook.book_id,
+      title: demoBook.title,
+      author: demoBook.author,
+      source_format: demoBook.source_format,
+      source_sha256: demoBook.source_sha256,
+      publication_mode: demoBook.publication_mode,
+      chapter_count: demoBook.chapters.length,
+      segment_count: 2,
+    }]);
+    await markBookMetadataSynced("owner-a", demoBook);
+
+    await deleteLocalBook(demoBook.book_id, "owner-a");
+
+    expect(await loadProgress(demoBook.book_id)).toBeUndefined();
+    expect(await loadHiddenBooks()).toEqual([]);
+    expect(await loadCachedCloudBooks("owner-a")).toEqual([]);
+    expect(await bookMetadataNeedsSync("owner-a", demoBook)).toBe(true);
   });
 });

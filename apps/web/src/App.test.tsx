@@ -8,10 +8,20 @@ const testState = vi.hoisted(() => ({
   firebaseConfigured: false,
   user: null as null | { uid: string; photoURL: string | null },
   workerLinks: [] as Array<Record<string, unknown>>,
+  cloudBooks: [] as Array<Record<string, unknown>>,
 }));
 
 const pairingMocks = vi.hoisted(() => ({
   revoke: vi.fn(async () => undefined),
+}));
+
+const bookMocks = vi.hoisted(() => ({
+  deleteLocal: vi.fn(async () => undefined),
+  hide: vi.fn(async () => undefined),
+  requestDeletion: vi.fn(async () => ({
+    cancelled_tasks: 1,
+    queued_audio_chunks: 2,
+  })),
 }));
 
 vi.mock("./firebase", () => ({
@@ -73,6 +83,7 @@ vi.mock("./cloud", () => ({
   markBookListened: vi.fn(async () => undefined),
   reorderGenerationQueue: vi.fn(async () => undefined),
   requestAudioRepair: vi.fn(async () => undefined),
+  requestBookDeletion: bookMocks.requestDeletion,
   saveBookmark: vi.fn(async () => "bookmark-a"),
   saveProgressOptimistically: vi.fn(),
   saveVoiceGenerationProfile: vi.fn(async () => undefined),
@@ -80,7 +91,10 @@ vi.mock("./cloud", () => ({
   updateGenerationQueueItem: vi.fn(async () => 1),
   watchAudioChunks: vi.fn(() => () => undefined),
   watchBookmarks: vi.fn(() => () => undefined),
-  watchCloudBooks: vi.fn(() => () => undefined),
+  watchCloudBooks: vi.fn((_ownerUid: string, listener: (books: unknown[]) => void) => {
+    listener(testState.cloudBooks);
+    return () => undefined;
+  }),
   watchGenerationTasks: vi.fn((_ownerUid: string, listener: (tasks: unknown[]) => void) => {
     listener([]);
     return () => undefined;
@@ -92,13 +106,17 @@ vi.mock("./device", () => ({ registerCurrentDevice: vi.fn(async () => undefined)
 vi.mock("./storage", () => ({
   loadBooks: vi.fn(async () => [demoBook]),
   loadCachedCloudBooks: vi.fn(async () => []),
+  loadHiddenBooks: vi.fn(async () => []),
   loadPendingProgress: vi.fn(async () => []),
   loadProgress: vi.fn(async () => undefined),
   bookMetadataNeedsSync: vi.fn(async () => false),
   cacheCloudBooks: vi.fn(async () => undefined),
+  deleteLocalBook: bookMocks.deleteLocal,
+  hideBook: bookMocks.hide,
   markBookMetadataSynced: vi.fn(async () => undefined),
   saveBook: vi.fn(async () => undefined),
   saveProgress: vi.fn(async () => undefined),
+  unhideBook: vi.fn(async () => undefined),
 }));
 
 function setPlatform(width: number, platform: string, touchPoints = 0) {
@@ -112,7 +130,11 @@ describe("书架响应式入口", () => {
     testState.firebaseConfigured = false;
     testState.user = null;
     testState.workerLinks = [];
+    testState.cloudBooks = [];
     pairingMocks.revoke.mockClear();
+    bookMocks.deleteLocal.mockClear();
+    bookMocks.hide.mockClear();
+    bookMocks.requestDeletion.mockClear();
     setPlatform(1280, "MacIntel");
   });
 
@@ -187,5 +209,51 @@ describe("书架响应式入口", () => {
     expect(screen.getByRole("heading", { name: "断开这台 Mac？" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认断开" }));
     await waitFor(() => expect(pairingMocks.revoke).toHaveBeenCalledWith("owner-a", "worker-a"));
+  });
+
+  it("可从书卡菜单隐藏一本书，并说明可以恢复", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByLabelText("返回书架"));
+    fireEvent.click(screen.getByRole("button", { name: "管理《山窗小札》" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "从这台设备的书架隐藏" }));
+
+    await waitFor(() => expect(bookMocks.hide).toHaveBeenCalledWith({
+      book_id: demoBook.book_id,
+      title: demoBook.title,
+      author: demoBook.author,
+    }));
+    expect(screen.getByRole("status")).toHaveTextContent("已从这台设备的书架隐藏");
+    expect(screen.getByRole("button", { name: /已隐藏书籍 1/ })).toBeInTheDocument();
+  });
+
+  it("永久删除必须经过两步确认并输入指定文字", async () => {
+    testState.firebaseConfigured = true;
+    testState.user = { uid: "owner-a", photoURL: null };
+    testState.cloudBooks = [{
+      book_id: "cloud-delete-book",
+      title: "云端待删书",
+      author: "测试作者",
+      source_format: "EPUB",
+      source_sha256: "a".repeat(64),
+      publication_mode: "LOCAL_ONLY",
+      chapter_count: 2,
+      segment_count: 20,
+      text_status: "READY",
+    }];
+    render(<App />);
+    fireEvent.click(await screen.findByLabelText("返回书架"));
+    fireEvent.click(await screen.findByRole("button", { name: "管理《云端待删书》" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "永久删除这本书" }));
+    expect(screen.getByText("永久删除 · 第 1 步 / 2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "继续核对" }));
+    const confirmation = screen.getByPlaceholderText("永久删除");
+    fireEvent.change(confirmation, { target: { value: "永久删除" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认永久删除" }));
+
+    await waitFor(() => expect(bookMocks.requestDeletion).toHaveBeenCalledWith(
+      "owner-a",
+      "cloud-delete-book",
+    ));
+    expect(bookMocks.deleteLocal).toHaveBeenCalledWith("cloud-delete-book", "owner-a");
   });
 });

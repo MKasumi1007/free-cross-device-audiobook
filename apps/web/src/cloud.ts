@@ -5,10 +5,13 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
+  query,
   runTransaction,
   serverTimestamp,
   setDoc,
+  where,
   writeBatch,
+  type DocumentReference,
   type DocumentData,
   type Unsubscribe,
 } from "firebase/firestore";
@@ -214,6 +217,12 @@ function requireServices() {
     error.code = "resource-exhausted-local-safety-pause";
     throw error;
   }
+  const services = getFirebaseServices();
+  if (!services) throw new Error("Firebase 尚未配置。");
+  return services;
+}
+
+function requireDeletionServices() {
   const services = getFirebaseServices();
   if (!services) throw new Error("Firebase 尚未配置。");
   return services;
@@ -766,10 +775,9 @@ export async function requestAudioDeletion(
   ownerUid: string,
   chunks: readonly AudioChunk[],
 ): Promise<number> {
-  const { db } = requireServices();
+  const { db } = requireDeletionServices();
   let queued = 0;
   for (const chunk of chunks) {
-    if (cloudSyncIsPaused()) throw new Error(cloudSyncPauseMessage());
     const requestId = crypto.randomUUID();
     const chunkReference = doc(
       db,
@@ -828,6 +836,132 @@ export async function requestAudioDeletion(
     if (created) queued += 1;
   }
   return queued;
+}
+
+export interface BookDeletionResult {
+  cancelled_tasks: number;
+  queued_audio_chunks: number;
+}
+
+async function commitDeletes(
+  references: readonly DocumentReference<DocumentData>[],
+): Promise<number> {
+  if (references.length === 0) return 0;
+  const { db } = requireDeletionServices();
+  let deleted = 0;
+  for (let offset = 0; offset < references.length; offset += 400) {
+    const batch = writeBatch(db);
+    const page = references.slice(offset, offset + 400);
+    page.forEach((reference) => batch.delete(reference));
+    await batch.commit();
+    deleted += page.length;
+  }
+  return deleted;
+}
+
+export async function requestBookDeletion(
+  ownerUid: string,
+  bookId: string,
+): Promise<BookDeletionResult> {
+  const { db } = requireDeletionServices();
+  const bookReference = doc(db, `users/${ownerUid}/books/${bookId}`);
+  const requestReference = doc(db, `users/${ownerUid}/bookDeletionRequests/${bookId}`);
+  const [bookSnapshot, requestSnapshot] = await Promise.all([
+    getDoc(bookReference),
+    getDoc(requestReference),
+  ]);
+  recordEstimatedUsage({ reads: 2 });
+  if (!bookSnapshot.exists()) throw new Error("云端已经找不到这本书，刷新书架后再试。");
+  const book = bookSnapshot.data() as CloudBookSummary;
+  const currentRequest = requestSnapshot.data() as { status?: string } | undefined;
+  if (!requestSnapshot.exists()) {
+    await setDoc(requestReference, {
+      owner_uid: ownerUid,
+      request_id: bookId,
+      book_id: bookId,
+      title: book.title,
+      publication_mode: book.publication_mode,
+      private_text_key: book.private_text_key || null,
+      private_text_parts: Number(book.private_text_parts || 0),
+      text_asset_id: book.text_asset_id ?? null,
+      text_asset_url: book.text_asset_url || null,
+      status: "PREPARING",
+      attempt_count: 0,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    recordEstimatedUsage({ writes: 1 });
+  } else if (currentRequest?.status === "DONE") {
+    throw new Error("这本书已经完成永久删除，刷新书架即可。");
+  }
+
+  const taskSnapshot = await getDocs(query(
+    collection(db, `users/${ownerUid}/generationRequests`),
+    where("book_id", "==", bookId),
+  ));
+  recordEstimatedUsage({ reads: taskSnapshot.size });
+  let cancelledTasks = 0;
+  for (let offset = 0; offset < taskSnapshot.docs.length; offset += 400) {
+    const batch = writeBatch(db);
+    const page = taskSnapshot.docs.slice(offset, offset + 400);
+    page.forEach((task) => {
+      const status = String(task.data().status || "");
+      if (status === "CANCELLED") return;
+      batch.update(task.ref, {
+        status: "CANCELLED",
+        pause_reason: null,
+        updated_at: serverTimestamp(),
+      });
+      cancelledTasks += 1;
+    });
+    if (page.some((task) => String(task.data().status || "") !== "CANCELLED")) {
+      await batch.commit();
+    }
+  }
+  recordEstimatedUsage({ writes: cancelledTasks });
+
+  const audioSnapshot = await getDocs(collection(
+    db,
+    `users/${ownerUid}/books/${bookId}/audioChunks`,
+  ));
+  recordEstimatedUsage({ reads: audioSnapshot.size });
+  const chunks = audioSnapshot.docs.map((item) => item.data() as AudioChunk);
+  const queuedAudioChunks = await requestAudioDeletion(
+    ownerUid,
+    chunks.filter(audioChunkCanBeDeleted),
+  );
+
+  if (!requestSnapshot.exists() || currentRequest?.status === "PREPARING") {
+    await runTransaction(db, async (transaction) => {
+      const latest = await transaction.get(requestReference);
+      if (!latest.exists()) throw new Error("永久删除请求没有保存成功。");
+      if (latest.data().status === "PREPARING") {
+        transaction.update(requestReference, {
+          status: "QUEUED",
+          updated_at: serverTimestamp(),
+        });
+      }
+    });
+    recordEstimatedUsage({ reads: 1, writes: 1 });
+  }
+
+  const [chapters, bookmarks] = await Promise.all([
+    getDocs(collection(db, `users/${ownerUid}/books/${bookId}/chapters`)),
+    getDocs(collection(db, `users/${ownerUid}/books/${bookId}/bookmarks`)),
+  ]);
+  recordEstimatedUsage({ reads: chapters.size + bookmarks.size });
+  const childReferences = [
+    ...chapters.docs.map((item) => item.ref),
+    ...bookmarks.docs.map((item) => item.ref),
+    doc(db, `users/${ownerUid}/progress/${bookId}`),
+  ];
+  const deletedChildren = await commitDeletes(childReferences);
+  await commitDeletes([bookReference]);
+  recordEstimatedUsage({ writes: deletedChildren + 1 });
+  return {
+    cancelled_tasks: cancelledTasks,
+    queued_audio_chunks: queuedAudioChunks,
+  };
 }
 
 export async function requestAudioRegeneration(

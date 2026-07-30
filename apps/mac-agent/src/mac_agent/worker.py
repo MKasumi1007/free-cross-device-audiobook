@@ -19,7 +19,7 @@ from .private_assets import FirestorePrivateAssetPublisher
 from .repository_assets import GitHubAudiobookPublisher, GitHubRepositoryAssetPublisher
 from .reconciliation import AudioReconciler
 from .resources import ResourcePolicy
-from .task_cloud import CloudDeletion, CloudTask, FirestoreWorkerTasks
+from .task_cloud import CloudBookDeletion, CloudDeletion, CloudTask, FirestoreWorkerTasks
 from .voice import VoiceProfile, VoiceRegistry
 
 
@@ -207,6 +207,9 @@ class MacGenerationWorker:
         deletion = self.tasks.next_deletion(owner_uid)
         if deletion is not None:
             return self._process_deletion(deletion)
+        book_deletion = self.tasks.next_book_deletion(owner_uid)
+        if book_deletion is not None:
+            return self._process_book_deletion(book_deletion)
         if self.policy.pause_reason() == "USER_PAUSED":
             self._unload_generator()
             self.last_state = "USER_PAUSED"
@@ -367,6 +370,62 @@ class MacGenerationWorker:
             )
             self.last_state = "DELETE_RETRY"
             self.last_error = str(error)
+        return True
+
+    def _process_book_deletion(self, deletion: CloudBookDeletion) -> bool:
+        claimed = self.tasks.claim_book_deletion(deletion)
+        try:
+            pending_audio = [
+                item
+                for item in self.tasks.audio_inventory(
+                    claimed.owner_uid,
+                    [claimed.book_id],
+                )
+                if item.status != "DELETED"
+            ]
+            if pending_audio:
+                raise GenerationError(
+                    "BOOK_AUDIO_DELETION_PENDING",
+                    "书籍音频仍在安全删除中，稍后会自动继续。",
+                )
+            if claimed.private_text_key:
+                FirestorePrivateAssetPublisher(
+                    self.tasks.client,
+                    claimed.owner_uid,
+                    task_id=f"book-deletion:{claimed.book_id}",
+                ).delete_private(
+                    claimed.private_text_key,
+                    part_count=claimed.private_text_parts or None,
+                )
+            if claimed.text_asset_id is not None and claimed.text_asset_url:
+                GitHubRepositoryAssetPublisher(self.repository).delete_persisted(
+                    claimed.text_asset_id,
+                    claimed.text_asset_url,
+                )
+            self.library.remove(claimed.book_id)
+            self.tasks.purge_book_records(claimed)
+            self.tasks.complete_book_deletion(claimed)
+            self._published_books.discard(claimed.book_id)
+            self._ready_audio_seconds = None
+            self.last_state = "BOOK_DELETED"
+            self.last_error = ""
+        except Exception as error:
+            failure = error if isinstance(error, GenerationError) else GenerationError(
+                "BOOK_DELETE_FAILED",
+                "书籍文件暂时无法清理，稍后会自动重试。",
+            )
+            retry_at = datetime.now(UTC) + self._retry_delay(
+                failure.code,
+                claimed.attempt_count,
+            )
+            self.tasks.fail_book_deletion(
+                claimed,
+                error_code=failure.code,
+                message=str(failure),
+                retry_at=retry_at,
+            )
+            self.last_state = "BOOK_DELETE_RETRY"
+            self.last_error = str(failure)
         return True
 
     def _periodic_cleanup(self) -> None:

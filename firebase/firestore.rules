@@ -59,6 +59,18 @@ service cloud.firestore {
       );
     }
 
+    function activeBookDeletion(ownerUid, bookId) {
+      let requestPath =
+        /databases/$(database)/documents/users/$(ownerUid)/bookDeletionRequests/$(bookId);
+      return activeWorkerFor(ownerUid)
+        && exists(requestPath)
+        && get(requestPath).data.owner_uid == ownerUid
+        && get(requestPath).data.book_id == bookId
+        && get(requestPath).data.status == 'PROCESSING'
+        && get(requestPath).data.lease_owner == request.auth.uid
+        && get(requestPath).data.lease_deadline > request.time;
+    }
+
     function privateAssetReady(ownerUid, assetKey, bookId, kind) {
       let assetPath = /databases/$(database)/documents/users/$(ownerUid)/privateAssets/$(assetKey);
       return assetKey is string
@@ -413,7 +425,8 @@ service cloud.firestore {
             && deletionTaskAfter(ownerUid, resource.data.task_id).data.deletion_generation == resource.data.deletion_generation
             && deletionTaskAfter(ownerUid, resource.data.task_id).data.start_segment_id == resource.data.start_segment_id
           );
-          allow delete: if false;
+          allow delete: if resource.data.status == 'DELETED'
+            && activeBookDeletion(ownerUid, bookId);
         }
       }
 
@@ -547,7 +560,7 @@ service cloud.firestore {
           && validWorkerLease()
           && validWorkerProgress()
         );
-        allow delete: if false;
+        allow delete: if activeBookDeletion(ownerUid, resource.data.book_id);
       }
 
       match /audioDeletionRequests/{requestId} {
@@ -638,6 +651,97 @@ service cloud.firestore {
               )
             )
           );
+        allow delete: if false;
+      }
+
+      match /bookDeletionRequests/{requestId} {
+        allow read: if isOwner(ownerUid) || activeWorkerFor(ownerUid);
+        allow create: if isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && requestId == request.resource.data.book_id
+          && request.resource.data.request_id == requestId
+          && request.resource.data.status == 'PREPARING'
+          && request.resource.data.attempt_count == 0
+          && request.resource.data.created_at == request.time
+          && request.resource.data.updated_at == request.time
+          && request.resource.data.keys().hasOnly([
+            'owner_uid', 'request_id', 'book_id', 'title', 'publication_mode',
+            'private_text_key', 'private_text_parts', 'text_asset_id',
+            'text_asset_url', 'status', 'attempt_count', 'created_at', 'updated_at'
+          ])
+          && exists(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(requestId)
+          )
+          && request.resource.data.title == get(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(requestId)
+          ).data.title
+          && request.resource.data.publication_mode == get(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(requestId)
+          ).data.publication_mode
+          && request.resource.data.private_text_key == get(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(requestId)
+          ).data.get('private_text_key', null)
+          && request.resource.data.private_text_parts == get(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(requestId)
+          ).data.get('private_text_parts', 0)
+          && request.resource.data.text_asset_id == get(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(requestId)
+          ).data.get('text_asset_id', null)
+          && request.resource.data.text_asset_url == get(
+            /databases/$(database)/documents/users/$(ownerUid)/books/$(requestId)
+          ).data.get('text_asset_url', null);
+        allow update: if (
+          isOwner(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && resource.data.status == 'PREPARING'
+          && request.resource.data.status == 'QUEUED'
+          && request.resource.data.attempt_count == 0
+          && request.resource.data.updated_at == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'updated_at'
+          ])
+        ) || (
+          activeWorkerFor(ownerUid)
+          && requestKeepsOwner(ownerUid)
+          && request.resource.data.request_id == requestId
+          && request.resource.data.book_id == resource.data.book_id
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'attempt_count', 'lease_owner', 'lease_token',
+            'lease_deadline', 'retry_not_before', 'error_code', 'error_message',
+            'updated_at', 'completed_at'
+          ])
+          && (
+            (
+              resource.data.status in ['QUEUED', 'FAILED_RETRYABLE']
+              && request.resource.data.status == 'PROCESSING'
+              && request.resource.data.attempt_count == resource.data.attempt_count + 1
+              && request.resource.data.lease_owner == request.auth.uid
+              && request.resource.data.lease_token is string
+              && request.resource.data.lease_token.size() >= 24
+              && request.resource.data.lease_deadline > request.time
+            ) || (
+              resource.data.status == 'PROCESSING'
+              && resource.data.lease_deadline <= request.time
+              && request.resource.data.status == 'PROCESSING'
+              && request.resource.data.attempt_count == resource.data.attempt_count + 1
+              && request.resource.data.lease_owner == request.auth.uid
+              && request.resource.data.lease_token is string
+              && request.resource.data.lease_token.size() >= 24
+              && request.resource.data.lease_deadline > request.time
+            ) || (
+              resource.data.status == 'PROCESSING'
+              && resource.data.lease_owner == request.auth.uid
+              && resource.data.lease_token == request.resource.data.lease_token
+              && resource.data.lease_deadline > request.time
+              && request.resource.data.status in ['FAILED_RETRYABLE', 'DONE']
+              && request.resource.data.attempt_count == resource.data.attempt_count
+              && (
+                request.resource.data.status != 'DONE'
+                || request.resource.data.completed_at == request.time
+              )
+            )
+          )
+        );
         allow delete: if false;
       }
 

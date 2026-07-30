@@ -61,6 +61,10 @@ class FakePausedTasks:
         assert owner_uid == "owner"
         return None
 
+    def next_book_deletion(self, owner_uid: str) -> None:
+        assert owner_uid == "owner"
+        return None
+
     def next_task(self, owner_uid: str) -> None:
         self.next_task_calls += 1
         raise AssertionError(f"paused worker queried tasks for {owner_uid}")

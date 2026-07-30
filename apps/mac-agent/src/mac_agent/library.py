@@ -44,6 +44,24 @@ class LocalLibrary:
             return []
         return sorted(path.parent.name for path in self.root.glob("*/book.json"))
 
+    def remove(self, book_id: str) -> bool:
+        if not book_id or Path(book_id).name != book_id or book_id in {".", ".."}:
+            return False
+        root = self.root.resolve()
+        target_dir = (root / book_id).resolve()
+        if target_dir.parent != root:
+            return False
+        target = target_dir / "book.json"
+        if not target.is_file():
+            return False
+        target.unlink()
+        try:
+            target_dir.rmdir()
+        except OSError:
+            # Preserve any unexpected files rather than recursively deleting them.
+            pass
+        return True
+
     def _find_by_source_hash(self, source_sha256: str) -> Path | None:
         if not self.root.exists():
             return None

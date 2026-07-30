@@ -165,6 +165,26 @@ def test_existing_library_repairs_placeholder_chapter_title(tmp_path: Path) -> N
     assert loaded is not None
     assert loaded.chapters[0].title == "献给倾听我故事的伦纳德"
 
+
+def test_library_removes_only_the_selected_book_record(tmp_path: Path) -> None:
+    library_root = tmp_path / "library"
+    selected = library_root / "book-a"
+    selected.mkdir(parents=True)
+    (selected / "book.json").write_text("{}", encoding="utf-8")
+    unexpected = selected / "keep-me.txt"
+    unexpected.write_text("保留", encoding="utf-8")
+    other = library_root / "book-b"
+    other.mkdir(parents=True)
+    (other / "book.json").write_text("{}", encoding="utf-8")
+    library = LocalLibrary(library_root, FakePicker(None))
+
+    assert library.remove("book-a") is True
+    assert not (selected / "book.json").exists()
+    assert unexpected.read_text(encoding="utf-8") == "保留"
+    assert (other / "book.json").exists()
+    assert library.remove("../book-b") is False
+
+
 def test_request_cannot_supply_an_arbitrary_file_path(tmp_path: Path) -> None:
     picker = FakePicker(None)
     client = make_client(tmp_path, picker)

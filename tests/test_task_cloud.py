@@ -11,7 +11,7 @@ from audiobook_core.models import PublicationMode
 from audiobook_core.parser import parse_book
 from mac_agent.firebase_rest import FirebasePublicConfig, FirebaseRestClient, Identity
 from mac_agent.generation import ChunkJob, GenerationError, PublishedAsset, PublishedChunk, SegmentJob
-from mac_agent.task_cloud import FirestoreWorkerTasks
+from mac_agent.task_cloud import CloudBookDeletion, FirestoreWorkerTasks
 
 
 class FakeStore:
@@ -114,6 +114,61 @@ def test_worker_presence_uses_server_time_without_exposing_tokens() -> None:
     assert "last_seen_at" in body
     assert "REQUEST_TIME" in body
     assert "private-id-token" not in body
+
+
+def test_worker_claims_a_queued_book_deletion_with_its_own_lease() -> None:
+    transport = FakeTransport([
+        (200, [{"document": document(
+            "users/owner-a/bookDeletionRequests/book-a",
+            {
+                "owner_uid": "owner-a",
+                "request_id": "book-a",
+                "book_id": "book-a",
+                "title": "测试书",
+                "publication_mode": "LOCAL_ONLY",
+                "status": "QUEUED",
+                "attempt_count": 0,
+                "private_text_key": "a" * 64,
+                "private_text_parts": 2,
+            },
+        )}]),
+        (200, {"writeResults": [{"updateTime": "2026-07-30T09:01:00Z"}]}),
+    ])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+
+    pending = tasks.next_book_deletion("owner-a")
+    assert pending is not None
+    assert pending.private_text_key == "a" * 64
+    claimed = tasks.claim_book_deletion(pending)
+
+    assert claimed.status == "PROCESSING"
+    assert claimed.attempt_count == 1
+    assert claimed.lease_owner == "worker-a"
+    body = (transport.requests[-1][3] or b"").decode()
+    assert "bookDeletionRequests/book-a" in body
+    assert '"lease_token"' in body
+
+
+def test_book_record_purge_refuses_to_remove_live_audio_metadata() -> None:
+    transport = FakeTransport([
+        (200, [{"document": document(
+            "users/owner-a/books/book-a/audioChunks/chunk-a",
+            {"book_id": "book-a", "chunk_id": "chunk-a", "status": "READY"},
+        )}]),
+    ])
+    tasks = FirestoreWorkerTasks(make_client(transport))
+    deletion = CloudBookDeletion(
+        owner_uid="owner-a",
+        request_id="book-a",
+        book_id="book-a",
+        title="测试书",
+        publication_mode="LOCAL_ONLY",
+        status="PROCESSING",
+        attempt_count=1,
+    )
+
+    with pytest.raises(GenerationError, match="安全删除"):
+        tasks.purge_book_records(deletion)
 
 
 def test_ready_audio_seconds_counts_only_playable_cache() -> None:

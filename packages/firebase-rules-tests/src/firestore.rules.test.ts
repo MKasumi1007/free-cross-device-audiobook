@@ -7,6 +7,7 @@ import {
 import {
   Bytes,
   Timestamp,
+  deleteDoc,
   doc,
   getDoc,
   serverTimestamp,
@@ -922,6 +923,94 @@ describe("worker permissions", () => {
     });
     await assertFails(updateDoc(doc(workerDb(), requestPath), {
       status: "DONE", updated_at: serverTimestamp(), completed_at: serverTimestamp(),
+    }));
+  });
+
+  it("permanently deletes a book only through its owner request and active worker lease", async () => {
+    await seed("workerLinks/worker-a", {
+      worker_uid: "worker-a",
+      owner_uid: "owner-a",
+      worker_type: "MAC_AGENT",
+      scopes: ["generation"],
+      revoked_at: null,
+    });
+    await seed("users/owner-a/books/book-a", bookData("owner-a"));
+    const requestPath = "users/owner-a/bookDeletionRequests/book-a";
+    const owner = ownerDb();
+    await assertSucceeds(setDoc(doc(owner, requestPath), {
+      owner_uid: "owner-a",
+      request_id: "book-a",
+      book_id: "book-a",
+      title: "测试书",
+      publication_mode: "LOCAL_ONLY",
+      private_text_key: null,
+      private_text_parts: 0,
+      text_asset_id: null,
+      text_asset_url: null,
+      status: "PREPARING",
+      attempt_count: 0,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    }));
+    await assertSucceeds(updateDoc(doc(owner, requestPath), {
+      status: "QUEUED",
+      updated_at: serverTimestamp(),
+    }));
+
+    const worker = workerDb();
+    await assertSucceeds(updateDoc(doc(worker, requestPath), {
+      status: "PROCESSING",
+      attempt_count: 1,
+      lease_owner: "worker-a",
+      lease_token: "book-deletion-secure-token-123",
+      lease_deadline: Timestamp.fromMillis(Date.now() + 120_000),
+      retry_not_before: null,
+      updated_at: serverTimestamp(),
+    }));
+    const taskPath = "users/owner-a/generationRequests/task-a";
+    await seed(taskPath, {
+      ...taskData("owner-a"),
+      status: "CANCELLED",
+    });
+    const deletedChunkPath = "users/owner-a/books/book-a/audioChunks/chunk-a";
+    await seed(deletedChunkPath, {
+      owner_uid: "owner-a",
+      task_id: "task-a",
+      book_id: "book-a",
+      chunk_id: "chunk-a",
+      status: "DELETED",
+    });
+    const readyChunkPath = "users/owner-a/books/book-a/audioChunks/chunk-ready";
+    await seed(readyChunkPath, {
+      owner_uid: "owner-a",
+      task_id: "task-a",
+      book_id: "book-a",
+      chunk_id: "chunk-ready",
+      status: "READY",
+    });
+
+    await assertSucceeds(deleteDoc(doc(worker, taskPath)));
+    await assertSucceeds(deleteDoc(doc(worker, deletedChunkPath)));
+    await assertFails(deleteDoc(doc(worker, readyChunkPath)));
+    await assertSucceeds(updateDoc(doc(worker, requestPath), {
+      status: "DONE",
+      completed_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    }));
+    await assertFails(setDoc(doc(ownerDb("owner-b"), "users/owner-a/bookDeletionRequests/book-b"), {
+      owner_uid: "owner-a",
+      request_id: "book-b",
+      book_id: "book-b",
+      title: "伪造",
+      publication_mode: "LOCAL_ONLY",
+      private_text_key: null,
+      private_text_parts: 0,
+      text_asset_id: null,
+      text_asset_url: null,
+      status: "PREPARING",
+      attempt_count: 0,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
     }));
   });
 });
