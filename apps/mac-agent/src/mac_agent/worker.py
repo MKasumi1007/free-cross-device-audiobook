@@ -160,6 +160,10 @@ class MacGenerationWorker:
         deletion = self.tasks.next_deletion(owner_uid)
         if deletion is not None:
             return self._process_deletion(deletion)
+        if self.policy.pause_reason() == "USER_PAUSED":
+            self._unload_generator()
+            self.last_state = "USER_PAUSED"
+            return False
         task = self.tasks.next_task(owner_uid)
         if task is None:
             self._unload_generator()
