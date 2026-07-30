@@ -16,6 +16,7 @@ import {
 import { signInWithGoogle, signOutCurrentUser, watchAuth } from "./auth";
 import {
   buildGenerationQueue,
+  generationTaskIsLive,
   loadVoiceGenerationProfile,
   loadCloudProgress,
   loadRemoteBook,
@@ -336,7 +337,9 @@ export function App() {
   const selectedChapter = selectedBook?.chapters.find((chapter) => chapter.chapter_id === selectedChapterId)
     ?? selectedBook?.chapters[0];
   const activeMac = workerLinks.find((link) => !link.revoked_at);
-  const macOnline = E2E_PLAYER_MODE || workerIsOnline(activeMac);
+  const macOnline = E2E_PLAYER_MODE
+    || workerIsOnline(activeMac)
+    || generationTasks.some(generationTaskIsLive);
   const effectiveVoiceVersion = voiceStatus?.confirmed && voiceStatus.voice_version
     ? voiceStatus.voice_version
     : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildGenerationQueue,
   calculateAudioStats,
+  generationTaskIsLive,
   planGenerationRequests,
 } from "./cloud";
 
@@ -174,6 +175,23 @@ describe("manual chapter generation queue", () => {
       current_task_id: "",
       progress_percent: 0,
     });
+  });
+
+  it("treats a live generation lease as proof that the Mac is online", () => {
+    expect(generationTaskIsLive({
+      task_id: "active",
+      book_id: "book-long",
+      status: "UPLOADING",
+      priority: 1_000,
+      lease_deadline: new Date(Date.now() + 60_000),
+    })).toBe(true);
+    expect(generationTaskIsLive({
+      task_id: "expired",
+      book_id: "book-long",
+      status: "GENERATING",
+      priority: 1_000,
+      lease_deadline: new Date(Date.now() - 60_000),
+    })).toBe(false);
   });
 });
 

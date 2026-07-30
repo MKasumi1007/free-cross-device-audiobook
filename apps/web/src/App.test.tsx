@@ -66,6 +66,7 @@ vi.mock("./agent", () => ({
 vi.mock("./cloud", () => ({
   buildGenerationQueue: vi.fn(() => []),
   enqueueGenerationChapters: vi.fn(),
+  generationTaskIsLive: vi.fn(() => false),
   loadCloudProgress: vi.fn(async () => null),
   loadRemoteBook: vi.fn(async () => demoBook),
   loadVoiceGenerationProfile: vi.fn(async () => null),

@@ -581,14 +581,14 @@ function timestampMillis(value: unknown): number | null {
   return null;
 }
 
-function isLiveGenerationTask(task: GenerationTaskSummary): boolean {
+export function generationTaskIsLive(task: GenerationTaskSummary): boolean {
   if (!ACTIVE_GENERATION_STATUSES.has(task.status)) return false;
   const deadline = timestampMillis(task.lease_deadline);
   return deadline == null || deadline > Date.now();
 }
 
 function queueStatus(tasks: readonly GenerationTaskSummary[]): GenerationQueueStatus {
-  if (tasks.some(isLiveGenerationTask)) return "GENERATING";
+  if (tasks.some(generationTaskIsLive)) return "GENERATING";
   if (tasks.some((task) => task.status === "FAILED_RETRYABLE" || task.status === "FAILED_FINAL")) {
     return "FAILED";
   }
@@ -635,7 +635,7 @@ export function buildGenerationQueue(
         task.status !== "READY" && task.status !== "CANCELLED"
       )).length;
       const active = ordered
-        .filter(isLiveGenerationTask)
+        .filter(generationTaskIsLive)
         .sort((left, right) => (
           Number(timestampMillis(right.lease_deadline) || 0)
           - Number(timestampMillis(left.lease_deadline) || 0)
