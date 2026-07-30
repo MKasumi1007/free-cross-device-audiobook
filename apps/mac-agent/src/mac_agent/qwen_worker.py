@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import gc
 import json
 import os
 import re
@@ -81,6 +82,18 @@ def split_generation_text(text: str, max_chars: int = MAX_GENERATION_CHARS) -> l
     return combined
 
 
+def release_accelerator_cache(torch_module: Any) -> None:
+    """Release per-call MPS allocations without failing the generation worker."""
+    gc.collect()
+    try:
+        empty_cache = getattr(getattr(torch_module, "mps", None), "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+    except RuntimeError:
+        # Cache cleanup is best-effort; the generated audio is still valid.
+        pass
+
+
 def main() -> None:
     args = parse_args()
     try:
@@ -130,30 +143,35 @@ def main() -> None:
             sample_rate = 0
             try:
                 for piece in pieces:
-                    with contextlib.redirect_stdout(sys.stderr):
-                        waveforms, piece_rate = model.generate_voice_clone(
-                            text=piece,
-                            language="Chinese",
-                            ref_audio=str(reference_audio),
-                            ref_text=request["reference_text"],
-                            x_vector_only_mode=False,
-                            non_streaming_mode=True,
-                        )
-                    if not waveforms:
-                        raise RuntimeError("TTS_EMPTY_OUTPUT")
-                    if writer is None:
-                        sample_rate = int(piece_rate)
-                        writer = sf.SoundFile(
-                            output,
-                            mode="w",
-                            samplerate=sample_rate,
-                            channels=1,
-                            format="WAV",
-                            subtype="PCM_16",
-                        )
-                    elif int(piece_rate) != sample_rate:
-                        raise RuntimeError("TTS_SAMPLE_RATE_CHANGED")
-                    writer.write(waveforms[0])
+                    waveforms: Any = None
+                    try:
+                        with contextlib.redirect_stdout(sys.stderr):
+                            waveforms, piece_rate = model.generate_voice_clone(
+                                text=piece,
+                                language="Chinese",
+                                ref_audio=str(reference_audio),
+                                ref_text=request["reference_text"],
+                                x_vector_only_mode=False,
+                                non_streaming_mode=True,
+                            )
+                        if not waveforms:
+                            raise RuntimeError("TTS_EMPTY_OUTPUT")
+                        if writer is None:
+                            sample_rate = int(piece_rate)
+                            writer = sf.SoundFile(
+                                output,
+                                mode="w",
+                                samplerate=sample_rate,
+                                channels=1,
+                                format="WAV",
+                                subtype="PCM_16",
+                            )
+                        elif int(piece_rate) != sample_rate:
+                            raise RuntimeError("TTS_SAMPLE_RATE_CHANGED")
+                        writer.write(waveforms[0])
+                    finally:
+                        waveforms = None
+                        release_accelerator_cache(torch)
             finally:
                 if writer is not None:
                     writer.close()

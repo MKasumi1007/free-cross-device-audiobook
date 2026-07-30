@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import mac_agent.qwen_worker
-from mac_agent.qwen_worker import split_generation_text
+from mac_agent.qwen_worker import release_accelerator_cache, split_generation_text
 
 
 def test_generation_text_is_split_at_natural_bounded_breaks() -> None:
@@ -15,6 +15,22 @@ def test_generation_text_is_split_at_natural_bounded_breaks() -> None:
     assert "".join(pieces) == "第一句很短。" + "这是一段较长文字，" * 20
     assert len(pieces) > 1
     assert all(0 < len(piece) <= 40 for piece in pieces)
+
+
+def test_accelerator_cache_is_released_when_mps_is_available() -> None:
+    calls: list[str] = []
+
+    class FakeMps:
+        @staticmethod
+        def empty_cache() -> None:
+            calls.append("released")
+
+    class FakeTorch:
+        mps = FakeMps()
+
+    release_accelerator_cache(FakeTorch())
+
+    assert calls == ["released"]
 
 
 def test_third_party_stdout_cannot_corrupt_worker_protocol(tmp_path: Path) -> None:
