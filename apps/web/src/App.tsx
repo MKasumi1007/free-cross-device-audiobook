@@ -877,7 +877,11 @@ export function App() {
     <div className="app-shell">
       <header className="topbar">
         <button className="brand" onClick={() => setSelectedBookId("")} aria-label="返回书架">
-          <span className="brand-seal">米</span>
+          <img
+            className="brand-seal"
+            src={`${import.meta.env.BASE_URL}app-icon-192.png`}
+            alt=""
+          />
           <span><b>米兰读书</b><small>边听，边读，记住每一处停留</small></span>
         </button>
         <div className="topbar-actions">

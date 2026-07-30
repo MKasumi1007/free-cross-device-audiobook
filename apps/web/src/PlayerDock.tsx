@@ -198,6 +198,18 @@ export function PlayerDock({
       title: book.title,
       artist: book.author || "米兰读书",
       album: "米兰读书",
+      artwork: [
+        {
+          src: `${window.location.origin}${import.meta.env.BASE_URL}app-icon-192.png`,
+          sizes: "192x192",
+          type: "image/png",
+        },
+        {
+          src: `${window.location.origin}${import.meta.env.BASE_URL}app-icon-512.png`,
+          sizes: "512x512",
+          type: "image/png",
+        },
+      ],
     });
     const audio = audioRef.current;
     const seek = (seconds: number) => {

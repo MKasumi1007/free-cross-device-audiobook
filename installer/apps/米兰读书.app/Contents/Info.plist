@@ -4,6 +4,7 @@
   <key>CFBundleDisplayName</key><string>米兰读书</string>
   <key>CFBundleExecutable</key><string>open-audiobook</string>
   <key>CFBundleIdentifier</key><string>io.github.mkasumi1007.audiobook</string>
+  <key>CFBundleIconFile</key><string>MilanReader.icns</string>
   <key>CFBundleName</key><string>米兰读书</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.4.0</string>

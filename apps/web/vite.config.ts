@@ -28,7 +28,13 @@ export default defineConfig({
     },
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["seal.svg"],
+      includeAssets: [
+        "app-icon-32.png",
+        "app-icon-192.png",
+        "app-icon-512.png",
+        "app-icon-maskable-512.png",
+        "apple-touch-icon.png",
+      ],
       manifest: {
         name: "米兰读书",
         short_name: "米兰读书",
@@ -40,10 +46,22 @@ export default defineConfig({
         start_url: "/free-cross-device-audiobook/",
         icons: [
           {
-            src: "seal.svg",
-            sizes: "any",
-            type: "image/svg+xml",
-            purpose: "any maskable",
+            src: "app-icon-192.png",
+            sizes: "192x192",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "app-icon-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "app-icon-maskable-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
           },
         ],
       },
