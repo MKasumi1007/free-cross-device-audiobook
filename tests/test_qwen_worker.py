@@ -17,6 +17,13 @@ def test_generation_text_is_split_at_natural_bounded_breaks() -> None:
     assert all(0 < len(piece) <= 40 for piece in pieces)
 
 
+def test_default_generation_piece_is_small_enough_for_an_8gb_mac() -> None:
+    pieces = split_generation_text("这是用于限制统一内存峰值的一段较长测试文字。" * 8)
+
+    assert len(pieces) > 1
+    assert all(0 < len(piece) <= 40 for piece in pieces)
+
+
 def test_accelerator_cache_is_released_when_mps_is_available() -> None:
     calls: list[str] = []
 

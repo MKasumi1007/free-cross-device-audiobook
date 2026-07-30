@@ -13,7 +13,7 @@ from typing import Any
 
 
 PROTOCOL_STDOUT = sys.stdout
-MAX_GENERATION_CHARS = 120
+MAX_GENERATION_CHARS = 40
 
 
 def parse_args() -> argparse.Namespace:
