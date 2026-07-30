@@ -15,6 +15,7 @@ import {
 } from "./agent";
 import { signInWithGoogle, signOutCurrentUser, watchAuth } from "./auth";
 import {
+  buildGenerationQueue,
   loadVoiceGenerationProfile,
   loadCloudProgress,
   loadRemoteBook,
@@ -339,6 +340,9 @@ export function App() {
   const effectiveVoiceVersion = voiceStatus?.confirmed && voiceStatus.voice_version
     ? voiceStatus.voice_version
     : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";
+  const queuedChapterCount = buildGenerationQueue(generationTasks, books)
+    .filter((item) => item.status !== "COMPLETED" && item.status !== "REMOVED")
+    .length;
 
   useEffect(() => {
     if (E2E_PLAYER_MODE && selectedBook) {
@@ -736,7 +740,7 @@ export function App() {
           {user && canAdd && !activeMac && <button className="quiet-button header-button" onClick={() => void connectMacAutomatically()}>连接这台 Mac</button>}
           {user && canAdd && activeMac && <button className="quiet-button header-button is-connected" onClick={() => setShowDisconnectMac(true)}>Mac 已连接</button>}
           {canAdd && <button className="quiet-button header-button" onClick={() => setShowVoice(true)}>{voiceStatus?.confirmed ? "声音已设置" : "我的声音"}</button>}
-          {user && <button className="quiet-button header-button queue-header-button" onClick={() => setShowGenerationQueue(true)}>待生成 {generationTasks.filter((task) => !["READY", "CANCELLED"].includes(task.status)).length || ""}</button>}
+          {user && <button className="quiet-button header-button queue-header-button" onClick={() => setShowGenerationQueue(true)}>待生成 {queuedChapterCount || ""}</button>}
           {(user || E2E_PLAYER_MODE) && <button className="quiet-button header-button" onClick={() => setShowAudioManager(true)}>音频空间</button>}
           <button className="quiet-button header-button" onClick={() => setShowSystemStatus(true)}>系统状态</button>
           {user && <button className="account-button" onClick={() => void signOutCurrentUser()} title="点击退出登录">{user.photoURL ? <img src={user.photoURL} alt="" /> : "我"}</button>}
