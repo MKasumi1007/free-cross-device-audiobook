@@ -9,7 +9,7 @@
 
 ## 第一次安装
 
-1. 在 GitHub Releases 下载 `米兰读书安装器-0.5.0.zip` 并解压。
+1. 在 [GitHub Releases](https://github.com/MKasumi1007/free-cross-device-audiobook/releases/tag/v0.5.0) 下载 `MilanReader-Installer-0.5.0.zip` 并解压。
 2. 双击 `米兰读书安装器.app`。开源安装器没有付费 Apple Developer 签名；若 macOS 拦截，请在 Finder 右键安装器并选择“打开”。
 3. 等待安装器完成 Python、两套运行环境、音频工具、模型下载和真实短音频自检。不要在中途合上 Mac。
 4. 成功后点击“打开米兰读书”。以后也可双击 `~/Applications/米兰读书/米兰读书.app`。
