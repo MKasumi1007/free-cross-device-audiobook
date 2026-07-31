@@ -472,7 +472,10 @@ export function App() {
     : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";
   const localQuotaPaused = localGeneration?.worker.state === "FREE_QUOTA_LOCAL_READY"
     || Number(localGeneration?.worker.cloud_backoff_seconds || 0) > 0;
-  const localFallbackMode = cloudSyncPaused || localQuotaPaused;
+  const localQueueActive = localTasks.some((task) => (
+    task.status !== "READY" && task.status !== "CANCELLED"
+  ));
+  const localFallbackMode = cloudSyncPaused || localQuotaPaused || localQueueActive;
   const generationQueue = buildGenerationQueue(generationTasks, visibleBooks);
   const priorityGenerationItems = generationQueue.filter((item) => (
     item.status === "QUEUED" || item.status === "PAUSED"
