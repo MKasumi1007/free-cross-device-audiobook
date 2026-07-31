@@ -470,7 +470,8 @@ export function App() {
   const effectiveVoiceVersion = voiceStatus?.confirmed && voiceStatus.voice_version
     ? voiceStatus.voice_version
     : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";
-  const localQuotaPaused = localGeneration?.worker.state === "FREE_QUOTA_LOCAL_READY";
+  const localQuotaPaused = localGeneration?.worker.state === "FREE_QUOTA_LOCAL_READY"
+    || Number(localGeneration?.worker.cloud_backoff_seconds || 0) > 0;
   const localFallbackMode = cloudSyncPaused || localQuotaPaused;
   const generationQueue = buildGenerationQueue(generationTasks, visibleBooks);
   const priorityGenerationItems = generationQueue.filter((item) => (
