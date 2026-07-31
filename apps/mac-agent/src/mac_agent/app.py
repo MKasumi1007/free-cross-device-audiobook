@@ -6,7 +6,7 @@ from pathlib import Path
 from audiobook_core.errors import BookParseError
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from .diagnostics import SystemDiagnostics
@@ -54,6 +54,7 @@ class LocalGenerationSelection(BaseModel):
 
     book_id: str
     chapter_ids: list[str]
+    task_ids: list[str] = Field(default_factory=list)
 
 
 class LocalGenerationRequest(BaseModel):

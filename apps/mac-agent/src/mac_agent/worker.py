@@ -519,7 +519,19 @@ class MacGenerationWorker:
                 if isinstance(raw_chapter_ids, list)
                 else []
             )
-            result = self.local_tasks.enqueue(owner_uid, book, chapter_ids, voice_version)
+            raw_task_ids = selection.get("task_ids")
+            task_ids = (
+                [str(value) for value in raw_task_ids]
+                if isinstance(raw_task_ids, list) and raw_task_ids
+                else None
+            )
+            result = self.local_tasks.enqueue(
+                owner_uid,
+                book,
+                chapter_ids,
+                voice_version,
+                task_ids,
+            )
             for name in totals:
                 totals[name] += int(result[name])
         self._wake.set()

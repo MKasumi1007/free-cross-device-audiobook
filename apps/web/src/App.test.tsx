@@ -9,7 +9,18 @@ const testState = vi.hoisted(() => ({
   user: null as null | { uid: string; photoURL: string | null },
   workerLinks: [] as Array<Record<string, unknown>>,
   cloudBooks: [] as Array<Record<string, unknown>>,
+  cloudTasks: [] as Array<Record<string, unknown>>,
   generationQueue: [] as Array<Record<string, unknown>>,
+  localWorkerState: "IDLE",
+}));
+
+const localMocks = vi.hoisted(() => ({
+  enqueue: vi.fn(async () => ({
+    chapters: 1,
+    created: 1,
+    resumed: 0,
+    unchanged: 0,
+  })),
 }));
 
 const pairingMocks = vi.hoisted(() => ({
@@ -58,12 +69,13 @@ vi.mock("./agent", () => ({
   chooseBookOnMac: vi.fn(async () => null),
   chooseVoiceOnMac: vi.fn(async () => null),
   confirmVoice: vi.fn(),
+  enqueueLocalGeneration: localMocks.enqueue,
   getLocalGenerationStatus: vi.fn(async () => ({
     schema_version: 1,
     tasks: [],
     audio_chunks: [],
     pending_sync: 0,
-    worker: { state: "IDLE", error: "", model_loaded: false },
+    worker: { state: testState.localWorkerState, error: "", model_loaded: false },
   })),
   getVoiceStatus: vi.fn(async () => ({
     configured: false,
@@ -72,7 +84,7 @@ vi.mock("./agent", () => ({
   getAgentDiagnostics: vi.fn(async () => ({
     schema_version: 1,
     checked_at: "2026-07-18T00:00:00Z",
-    agent_version: "0.5.0",
+    agent_version: "0.5.1",
     agent_port: 17832,
     data_root: "/private/application-support",
     log_path: "/private/application-support/logs/diagnostics.jsonl",
@@ -116,7 +128,7 @@ vi.mock("./cloud", () => ({
     return () => undefined;
   }),
   watchGenerationTasks: vi.fn((_ownerUid: string, listener: (tasks: unknown[]) => void) => {
-    listener([]);
+    listener(testState.cloudTasks);
     return () => undefined;
   }),
 }));
@@ -151,7 +163,10 @@ describe("书架响应式入口", () => {
     testState.user = null;
     testState.workerLinks = [];
     testState.cloudBooks = [];
+    testState.cloudTasks = [];
     testState.generationQueue = [];
+    testState.localWorkerState = "IDLE";
+    localMocks.enqueue.mockClear();
     pairingMocks.revoke.mockClear();
     bookMocks.deleteLocal.mockClear();
     bookMocks.hide.mockClear();
@@ -262,6 +277,46 @@ describe("书架响应式入口", () => {
       "owner-a",
       [paused, queued],
     ));
+  });
+
+  it("免费云额度暂停时把旧云队列的未完成小段自动交给本机", async () => {
+    testState.firebaseConfigured = true;
+    testState.user = { uid: "owner-a", photoURL: null };
+    testState.localWorkerState = "FREE_QUOTA_LOCAL_READY";
+    const chapter = demoBook.chapters[0]!;
+    const task = {
+      owner_uid: "owner-a",
+      task_id: "task-pending",
+      book_id: demoBook.book_id,
+      chapter_id: chapter.chapter_id,
+      status: "QUEUED",
+      priority: 1_000,
+      voice_version: "voice-1",
+    };
+    testState.cloudTasks = [task];
+    testState.generationQueue = [{
+      queue_id: `${demoBook.book_id}:${chapter.chapter_id}`,
+      book_id: demoBook.book_id,
+      chapter_id: chapter.chapter_id,
+      book_title: demoBook.title,
+      chapter_title: chapter.title,
+      status: "QUEUED",
+      priority: 1_000,
+      task_ids: [task.task_id],
+    }];
+
+    render(<App />);
+
+    await waitFor(() => expect(localMocks.enqueue).toHaveBeenCalledWith(
+      "owner-a",
+      [{
+        book_id: demoBook.book_id,
+        chapter_ids: [chapter.chapter_id],
+        task_ids: [task.task_id],
+      }],
+      "voice-1",
+    ));
+    expect(screen.getByText("免费额度保护中")).toBeInTheDocument();
   });
 
   it("已配对时显示连接状态，并可确认撤销 Mac 权限", async () => {

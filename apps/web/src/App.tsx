@@ -7,6 +7,7 @@ import {
   chooseBookOnMac,
   chooseVoiceOnMac,
   confirmVoice,
+  enqueueLocalGeneration,
   getLocalGenerationStatus,
   getVoiceStatus,
   loadVoicePreview,
@@ -212,6 +213,7 @@ export function App() {
   const currentProgress = useRef<LocalProgress | null>(null);
   const jumpSequence = useRef(0);
   const localSyncRequested = useRef(new Set<string>());
+  const localMigrationRequested = useRef("");
   const firebaseConfigured = firebaseIsConfigured();
 
   useEffect(() => watchAuth(setUser), []);
@@ -468,6 +470,8 @@ export function App() {
   const effectiveVoiceVersion = voiceStatus?.confirmed && voiceStatus.voice_version
     ? voiceStatus.voice_version
     : cloudVoiceVersion || generationTasks.find((task) => task.voice_version)?.voice_version || "";
+  const localQuotaPaused = localGeneration?.worker.state === "FREE_QUOTA_LOCAL_READY";
+  const localFallbackMode = cloudSyncPaused || localQuotaPaused;
   const generationQueue = buildGenerationQueue(generationTasks, visibleBooks);
   const priorityGenerationItems = generationQueue.filter((item) => (
     item.status === "QUEUED" || item.status === "PAUSED"
@@ -475,6 +479,50 @@ export function App() {
   const queuedChapterCount = generationQueue
     .filter((item) => item.status !== "COMPLETED" && item.status !== "REMOVED")
     .length;
+
+  useEffect(() => {
+    if (!user || !macOnline || !localFallbackMode || !effectiveVoiceVersion) return;
+    const localTaskIds = new Set(localTasks.map((task) => task.task_id));
+    const cloudById = new Map(cloudGenerationTasks.map((task) => [task.task_id, task]));
+    const selections = buildGenerationQueue(cloudGenerationTasks, visibleBooks)
+      .filter((item) => item.status === "QUEUED" || item.status === "FAILED")
+      .map((item) => ({
+        book_id: item.book_id,
+        chapter_ids: [item.chapter_id],
+        task_ids: item.task_ids.filter((taskId) => {
+          const task = cloudById.get(taskId);
+          return Boolean(
+            task
+            && !localTaskIds.has(taskId)
+            && !["READY", "PAUSED", "CANCELLED"].includes(task.status),
+          );
+        }),
+      }))
+      .filter((selection) => selection.task_ids.length > 0);
+    if (!selections.length) return;
+    const requestKey = selections.flatMap((selection) => selection.task_ids).join(":");
+    if (!requestKey || localMigrationRequested.current === requestKey) return;
+    localMigrationRequested.current = requestKey;
+    void enqueueLocalGeneration(user.uid, selections, effectiveVoiceVersion)
+      .then((result) => {
+        setNotice(
+          `免费额度保护已接管 ${result.chapters} 章，`
+          + `这台 Mac 将从现有断点继续生成。`,
+        );
+      })
+      .catch((error) => {
+        localMigrationRequested.current = "";
+        setNotice(error instanceof Error ? error.message : "旧待生成任务暂时无法转到这台 Mac。");
+      });
+  }, [
+    cloudGenerationTasks,
+    effectiveVoiceVersion,
+    localFallbackMode,
+    localTasks,
+    macOnline,
+    user,
+    visibleBooks,
+  ]);
 
   useEffect(() => {
     if (E2E_PLAYER_MODE && selectedBook) {
@@ -998,7 +1046,7 @@ export function App() {
           <span><b>米兰读书</b><small>边听，边读，记住每一处停留</small></span>
         </button>
         <div className="topbar-actions">
-          <span className={`sync-state ${user && !cloudSyncPaused ? "is-online" : ""}`}><i /> {cloudSyncPaused ? "免费额度保护中" : user ? "云同步已开启" : "本机书架"}</span>
+          <span className={`sync-state ${user && !localFallbackMode ? "is-online" : ""}`}><i /> {localFallbackMode ? "免费额度保护中" : user ? "云同步已开启" : "本机书架"}</span>
           {firebaseConfigured && !user && <button className="quiet-button header-button mobile-login-button" onClick={() => void logIn()}>登录同步</button>}
           {user && canAdd && !activeMac && <button className="quiet-button header-button" onClick={() => void connectMacAutomatically()}>连接这台 Mac</button>}
           {user && canAdd && activeMac && <button className="quiet-button header-button is-connected" onClick={() => setShowDisconnectMac(true)}>Mac 已连接</button>}
@@ -1502,7 +1550,7 @@ export function App() {
           initialBookId={selectedBook?.book_id}
           initialChapterId={selectedChapter?.chapter_id}
           macOnline={macOnline}
-          localMode={cloudSyncPaused}
+          localMode={localFallbackMode}
           localAudioChunks={allLocalAudioChunks}
           onClose={() => setShowGenerationQueue(false)}
           onNotice={setNotice}

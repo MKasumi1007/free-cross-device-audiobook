@@ -44,6 +44,24 @@ def test_local_queue_is_persistent_and_uses_cloud_compatible_task_ids(tmp_path: 
     assert LocalGenerationStore(tmp_path / "local").next_task() == task
 
 
+def test_local_queue_can_take_over_only_unfinished_cloud_chunks(tmp_path: Path) -> None:
+    store = LocalGenerationStore(tmp_path / "local")
+    book = make_book()
+    pending_task_id = "chunk-book-1-voice-1-segment-0"
+
+    result = store.enqueue(
+        "owner-1",
+        book,
+        ["chapter-1"],
+        "voice-1",
+        [pending_task_id],
+    )
+
+    assert result == {"chapters": 1, "created": 1, "resumed": 0, "unchanged": 0}
+    assert store.next_task() is not None
+    assert store.next_task()["task_id"] == pending_task_id  # type: ignore[index]
+
+
 def test_local_queue_supports_pause_resume_and_reorder(tmp_path: Path) -> None:
     store = LocalGenerationStore(tmp_path / "local")
     store.enqueue("owner-1", make_book(), ["chapter-1"], "voice-1")

@@ -55,9 +55,11 @@ class LocalGenerationStore:
         book: ParsedBook,
         chapter_ids: list[str],
         voice_version: str,
+        task_ids: list[str] | None = None,
     ) -> dict[str, int]:
         selected = set(chapter_ids)
-        planned = self._plan(book, selected, voice_version)
+        allowed_tasks = set(task_ids) if task_ids else None
+        planned = self._plan(book, selected, voice_version, allowed_tasks)
         if not planned:
             raise ValueError("所选章节没有可朗读的正文。")
         with self._lock:
@@ -368,6 +370,7 @@ class LocalGenerationStore:
         book: ParsedBook,
         selected: set[str],
         voice_version: str,
+        allowed_tasks: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         planned: list[dict[str, Any]] = []
         for chapter in book.chapters:
@@ -382,8 +385,9 @@ class LocalGenerationStore:
                 if not current:
                     return
                 start = current[0]
-                planned.append({
-                    "task_id": f"chunk-{book.book_id}-{voice_version}-{start.segment_id}",
+                task_id = f"chunk-{book.book_id}-{voice_version}-{start.segment_id}"
+                plan = {
+                    "task_id": task_id,
                     "book_id": book.book_id,
                     "book_title": book.title,
                     "chapter_id": chapter.chapter_id,
@@ -394,7 +398,9 @@ class LocalGenerationStore:
                     "target_seconds": 600.0,
                     "execution_mode": "LOCAL",
                     "storage_mode": "LOCAL_MAC",
-                })
+                }
+                if allowed_tasks is None or task_id in allowed_tasks:
+                    planned.append(plan)
                 current = []
                 current_seconds = 0.0
                 chunk_order += 1

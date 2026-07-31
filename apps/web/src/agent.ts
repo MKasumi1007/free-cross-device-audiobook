@@ -61,6 +61,7 @@ export interface AgentDiagnostics {
 export interface LocalGenerationSelection {
   book_id: string;
   chapter_ids: string[];
+  task_ids?: string[];
 }
 
 export interface LocalGenerationResult {
