@@ -91,6 +91,6 @@ export function cloudSyncPauseMessage(): string {
   const pause = getCloudSyncPause();
   if (!pause) return "";
   return pause.reason === "REMOTE_QUOTA"
-    ? "今日免费云同步额度已暂停，本机书架和进度仍可使用，明天会自动恢复。"
-    : "为避免超出免费额度，今日云同步已提前暂停，明天会自动恢复。";
+    ? "今日免费云同步额度已暂停；这台 Mac 仍可本地生成和播放，明天会自动恢复并同步。"
+    : "为保护免费额度，今日云同步已提前暂停；这台 Mac 仍可本地生成和播放，明天会自动恢复并同步。";
 }

@@ -2,17 +2,24 @@ import type { ParsedBook } from "@audiobook/contracts";
 import { useEffect, useState } from "react";
 
 import {
+  enqueueLocalGeneration,
+  reorderLocalGenerationTasks,
+  updateLocalGenerationTasks,
+} from "./agent";
+import {
   buildGenerationQueue,
   enqueueGenerationChapters,
   loadAudioInventory,
   reorderGenerationQueue,
   updateGenerationQueueItem,
   type AudioInventoryItem,
+  type AudioChunk,
   type ChapterGenerationSelection,
   type GenerationQueueAction,
   type GenerationQueueItem,
   type GenerationTaskSummary,
 } from "./cloud";
+import { classifyFirebaseError } from "./firebase-errors";
 
 interface GenerationQueueProps {
   ownerUid: string;
@@ -22,6 +29,8 @@ interface GenerationQueueProps {
   initialBookId?: string;
   initialChapterId?: string;
   macOnline: boolean;
+  localMode: boolean;
+  localAudioChunks?: AudioChunk[];
   onClose: () => void;
   onNotice: (message: string) => void;
   onOpenAudioManager: () => void;
@@ -122,6 +131,8 @@ export function GenerationQueue({
   initialBookId = "",
   initialChapterId = "",
   macOnline,
+  localMode,
+  localAudioChunks = [],
   onClose,
   onNotice,
   onOpenAudioManager,
@@ -145,7 +156,18 @@ export function GenerationQueue({
   const generatingItem = activeItems.find((item) => item.status === "GENERATING");
   const waitingItems = activeItems.filter((item) => item.queue_id !== generatingItem?.queue_id);
   const historicalPausedItems = activeItems.filter((item) => item.historical_pause);
-  const readyAudio = audioInventory
+  const localInventory: AudioInventoryItem[] = localAudioChunks.map((chunk) => ({
+    ...chunk,
+    book_title: books.find((book) => book.book_id === chunk.book_id)?.title || "本机书籍",
+    chapter_title: books
+      .find((book) => book.book_id === chunk.book_id)
+      ?.chapters.find((chapter) => chapter.chapter_id === chunk.chapter_id)?.title || "未命名章节",
+  }));
+  const combinedInventory = new Map(
+    audioInventory.map((chunk) => [chunk.task_id || chunk.chunk_id, chunk]),
+  );
+  localInventory.forEach((chunk) => combinedInventory.set(chunk.task_id || chunk.chunk_id, chunk));
+  const readyAudio = [...combinedInventory.values()]
     .filter((item) => item.status === "READY")
     .sort((left, right) => (
       (timestampMillis(right.completed_at) || 0) - (timestampMillis(left.completed_at) || 0)
@@ -157,6 +179,10 @@ export function GenerationQueue({
   useEffect(() => {
     let active = true;
     async function refreshInventory() {
+      if (localMode) {
+        setInventoryError("");
+        return;
+      }
       try {
         const next = await loadAudioInventory(ownerUid, books);
         if (active) {
@@ -175,7 +201,7 @@ export function GenerationQueue({
       active = false;
       window.clearInterval(timer);
     };
-  }, [ownerUid, books]);
+  }, [ownerUid, books, localMode]);
 
   function toggleChapter(bookId: string, chapterId: string) {
     const key = selectionKey(bookId, chapterId);
@@ -222,11 +248,32 @@ export function GenerationQueue({
     }
     setBusy(true);
     try {
-      const result = await enqueueGenerationChapters(ownerUid, selections, voiceVersion);
+      let usedLocal = localMode;
+      let result;
+      if (usedLocal) {
+        result = await enqueueLocalGeneration(
+          ownerUid,
+          selections.map(({ book, chapter_ids }) => ({ book_id: book.book_id, chapter_ids })),
+          voiceVersion,
+        );
+      } else {
+        try {
+          result = await enqueueGenerationChapters(ownerUid, selections, voiceVersion);
+        } catch (error) {
+          if (!macOnline || classifyFirebaseError(error).kind !== "FREE_QUOTA") throw error;
+          usedLocal = true;
+          result = await enqueueLocalGeneration(
+            ownerUid,
+            selections.map(({ book, chapter_ids }) => ({ book_id: book.book_id, chapter_ids })),
+            voiceVersion,
+          );
+        }
+      }
       setSelectedChapters(new Set());
       if (result.created || result.resumed) {
         onNotice(
-          `已加入 ${result.chapters} 章：新建 ${result.created} 段，恢复 ${result.resumed} 段。`,
+          `${usedLocal ? "已交给这台 Mac 本地生成" : "已加入待生成列表"} ${result.chapters} 章：`
+          + `新建 ${result.created} 段，恢复 ${result.resumed} 段。`,
         );
       } else {
         onNotice("这些章节已经生成或已在队列中，不会重复生成。");
@@ -241,7 +288,17 @@ export function GenerationQueue({
   async function runAction(item: GenerationQueueItem, action: GenerationQueueAction) {
     setBusy(true);
     try {
-      const changed = await updateGenerationQueueItem(ownerUid, item.task_ids, action);
+      const localTaskIds = item.task_ids.filter((taskId) => (
+        tasks.find((task) => task.task_id === taskId)?.execution_mode === "LOCAL"
+      ));
+      const cloudTaskIds = item.task_ids.filter((taskId) => !localTaskIds.includes(taskId));
+      let changed = 0;
+      if (localTaskIds.length) {
+        changed += await updateLocalGenerationTasks(localTaskIds, action);
+      }
+      if (cloudTaskIds.length) {
+        changed += await updateGenerationQueueItem(ownerUid, cloudTaskIds, action);
+      }
       const messages: Record<GenerationQueueAction, string> = {
         PAUSE: item.status === "GENERATING"
           ? "正在生成的小段会正常完成，之后暂停这一章。"
@@ -269,7 +326,18 @@ export function GenerationQueue({
     const generating = activeItems.filter((entry) => entry.status === "GENERATING");
     setBusy(true);
     try {
-      await reorderGenerationQueue(ownerUid, [...generating, ...reordered]);
+      const ordered = [...generating, ...reordered];
+      const localTaskIds = ordered.flatMap((entry) => entry.task_ids.filter((taskId) => (
+        tasks.find((task) => task.task_id === taskId)?.execution_mode === "LOCAL"
+      )));
+      const cloudItems = ordered
+        .map((entry) => ({
+          ...entry,
+          task_ids: entry.task_ids.filter((taskId) => !localTaskIds.includes(taskId)),
+        }))
+        .filter((entry) => entry.task_ids.length > 0);
+      if (localTaskIds.length) await reorderLocalGenerationTasks(localTaskIds);
+      if (cloudItems.length) await reorderGenerationQueue(ownerUid, cloudItems);
       onNotice(direction < 0 ? "已提前这一章。" : "已把这一章向后移动。");
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "队列顺序没有保存成功。");
@@ -283,7 +351,17 @@ export function GenerationQueue({
     if (!taskIds.length) return;
     setBusy(true);
     try {
-      const changed = await updateGenerationQueueItem(ownerUid, taskIds, "REMOVE");
+      const localTaskIds = taskIds.filter((taskId) => (
+        tasks.find((task) => task.task_id === taskId)?.execution_mode === "LOCAL"
+      ));
+      const cloudTaskIds = taskIds.filter((taskId) => !localTaskIds.includes(taskId));
+      let changed = 0;
+      if (localTaskIds.length) {
+        changed += await updateLocalGenerationTasks(localTaskIds, "REMOVE");
+      }
+      if (cloudTaskIds.length) {
+        changed += await updateGenerationQueueItem(ownerUid, cloudTaskIds, "REMOVE");
+      }
       onNotice(`已整理 ${changed} 个旧暂停任务。需要时重新勾选章节即可生成。`);
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "旧暂停任务没有整理成功。");
@@ -308,7 +386,9 @@ export function GenerationQueue({
           </div>
           <div className="generation-queue-health">
             <i className={macOnline ? "is-online" : ""} />
-            {macOnline ? "Mac 在线" : "Mac 关机也会保留队列"}
+            {localMode && macOnline
+              ? "免费额度保护 · 本地生成"
+              : macOnline ? "Mac 在线" : "Mac 关机也会保留队列"}
           </div>
           <button className="modal-close" onClick={onClose} aria-label="关闭待生成列表">×</button>
         </header>
@@ -372,7 +452,7 @@ export function GenerationQueue({
                 disabled={busy || !selectedCount || !voiceVersion}
                 onClick={() => void addSelectedChapters()}
               >
-                加入待生成列表
+                {localMode ? "交给这台 Mac 生成" : "加入待生成列表"}
               </button>
             </div>
             {!voiceVersion && (
@@ -468,6 +548,7 @@ export function GenerationQueue({
                       <b>{item.chapter_title}</b>
                       <span>
                         {STATUS_LABELS[item.status]} · {item.ready_chunks}/{item.total_chunks} 段完成
+                        {item.local_only ? " · 本地" : ""}
                         {item.estimated_seconds ? ` · ${formatDuration(item.estimated_seconds)}` : ""}
                       </span>
                     </div>

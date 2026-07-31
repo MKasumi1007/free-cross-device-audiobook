@@ -500,6 +500,12 @@ class ChunkPipeline:
 
     def _validate(self, job: ChunkJob) -> None:
         storage_mode = getattr(self.publisher, "storage_mode", "PUBLIC_GITHUB")
+        if storage_mode == "LOCAL_MAC":
+            if not job.segments or any(not segment.spoken_text for segment in job.segments):
+                raise GenerationError("EMPTY_CHUNK", "音频块没有可朗读正文。")
+            if not job.lease_token or job.attempt_id <= 0:
+                raise GenerationError("LEASE_REQUIRED", "生成任务没有有效租约。")
+            return
         if (
             job.publication_mode is PublicationMode.LOCAL_ONLY
             and storage_mode != "PRIVATE_FIRESTORE"

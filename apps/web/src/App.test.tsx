@@ -58,6 +58,13 @@ vi.mock("./agent", () => ({
   chooseBookOnMac: vi.fn(async () => null),
   chooseVoiceOnMac: vi.fn(async () => null),
   confirmVoice: vi.fn(),
+  getLocalGenerationStatus: vi.fn(async () => ({
+    schema_version: 1,
+    tasks: [],
+    audio_chunks: [],
+    pending_sync: 0,
+    worker: { state: "IDLE", error: "", model_loaded: false },
+  })),
   getVoiceStatus: vi.fn(async () => ({
     configured: false,
     preview: { state: "IDLE", error: "", model_loaded: false },
@@ -65,7 +72,7 @@ vi.mock("./agent", () => ({
   getAgentDiagnostics: vi.fn(async () => ({
     schema_version: 1,
     checked_at: "2026-07-18T00:00:00Z",
-    agent_version: "0.4.0",
+    agent_version: "0.5.0",
     agent_port: 17832,
     data_root: "/private/application-support",
     log_path: "/private/application-support/logs/diagnostics.jsonl",
@@ -81,12 +88,19 @@ vi.mock("./agent", () => ({
 
 vi.mock("./cloud", () => ({
   buildGenerationQueue: vi.fn(() => testState.generationQueue),
-  enqueueGenerationChapters: vi.fn(),
+  enqueueGenerationChapters: vi.fn(async () => ({
+    chapters: 0,
+    created: 0,
+    resumed: 0,
+    unchanged: 0,
+  })),
   generationTaskIsLive: vi.fn(() => false),
   loadCloudProgress: vi.fn(async () => null),
   loadRemoteBook: vi.fn(async () => demoBook),
   loadVoiceGenerationProfile: vi.fn(async () => null),
   markBookListened: vi.fn(async () => undefined),
+  mergeAudioChunks: vi.fn((cloud: unknown[], local: unknown[]) => [...cloud, ...local]),
+  mergeGenerationTasks: vi.fn((cloud: unknown[], local: unknown[]) => [...cloud, ...local]),
   reorderGenerationQueue: queueMocks.reorder,
   requestAudioRepair: vi.fn(async () => undefined),
   requestBookDeletion: bookMocks.requestDeletion,
@@ -227,6 +241,7 @@ describe("书架响应式入口", () => {
       eta_seconds: null,
       chapter_eta_seconds: null,
       historical_pause: false,
+      local_only: false,
     });
     const secondChapter = demoBook.chapters[1]!;
     const firstChapter = demoBook.chapters[0]!;

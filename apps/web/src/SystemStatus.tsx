@@ -8,6 +8,7 @@ import {
   type AgentDiagnostics,
 } from "./agent";
 import { checkFirestoreConnection, firebaseIsConfigured } from "./firebase";
+import { classifyFirebaseError } from "./firebase-errors";
 import { workerIsOnline, type WorkerLink } from "./pairing";
 
 type Status = "ok" | "warning" | "failed";
@@ -98,12 +99,17 @@ export function SystemStatus({ user, activeMac, canInspectLocalMac, onClose, onN
         await checkFirestoreConnection(user.uid);
         next.push(item("firestore", "Firestore 连接", "ok", "已通过账号权限读取 Firestore。"));
       } catch (error) {
+        const syncError = classifyFirebaseError(error);
         next.push(item(
           "firestore",
           "Firestore 连接",
-          "failed",
-          error instanceof Error ? error.message : "连接失败。",
-          "检查网络和登录状态；不会自动升级到付费方案。",
+          syncError.kind === "FREE_QUOTA" ? "warning" : "failed",
+          syncError.kind === "FREE_QUOTA"
+            ? "今日免费云同步额度已暂停；Mac 本地生成和本地播放仍可继续。"
+            : syncError.message,
+          syncError.kind === "FREE_QUOTA"
+            ? "系统会降低云端检查频率，额度恢复后自动同步。"
+            : "检查网络和登录状态；不会自动升级到付费方案。",
         ));
       }
     } else {
@@ -133,6 +139,14 @@ export function SystemStatus({ user, activeMac, canInspectLocalMac, onClose, onN
           item("agent_version", "Agent 版本", report.agent_version === __APP_VERSION__ ? "ok" : "warning", report.agent_version, report.agent_version === __APP_VERSION__ ? "" : "运行网页中的自动更新。"),
           ...report.items,
           item("worker_state", "当前后台任务", workerStateStatus(report.worker.state), `${report.worker.state}${report.worker.error ? `：${report.worker.error}` : ""}`),
+          item(
+            "local_generation",
+            "本地生成保护",
+            "ok",
+            report.worker.local_pending_sync
+              ? `${report.worker.local_pending_sync} 段本地音频等待云额度恢复后同步。`
+              : "本地生成队列已启用。",
+          ),
           item("recent_error", "最近一次真实错误", report.recent_error ? "warning" : "ok", report.recent_error ? `${report.recent_error.error_code} · ${report.recent_error.message}` : "没有记录到错误。", report.recent_error ? `完整日志：${report.log_path}` : ""),
           item("log_path", "本地日志位置", "ok", report.log_path),
         );

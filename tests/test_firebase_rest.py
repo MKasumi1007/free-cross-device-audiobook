@@ -177,3 +177,19 @@ def test_firestore_permission_error_keeps_private_response_details() -> None:
     assert captured.value.code == "FIRESTORE_PERMISSION_DENIED"
     assert captured.value.details["http_status"] == 403
     assert "PERMISSION_DENIED" in captured.value.details["response"]
+
+
+def test_firestore_quota_error_enables_local_generation_message() -> None:
+    transport = FakeTransport([(429, {"error": {"status": "RESOURCE_EXHAUSTED"}})])
+    client = FirebaseRestClient(
+        FirebasePublicConfig(api_key="public-web-key", project_id="demo-project"),
+        token_store=FakeTokenStore(),
+        transport=transport,
+    )
+
+    with pytest.raises(FirebaseRestError) as captured:
+        client._json_request("检查生成队列", "GET", "https://example.test")
+
+    assert captured.value.code == "FIREBASE_QUOTA_EXHAUSTED"
+    assert captured.value.details["http_status"] == 429
+    assert "本地生成仍可继续" in str(captured.value)

@@ -5,6 +5,8 @@ import {
   buildGenerationQueue,
   calculateAudioStats,
   generationTaskIsLive,
+  mergeAudioChunks,
+  mergeGenerationTasks,
   planGenerationRequests,
 } from "./cloud";
 
@@ -208,5 +210,64 @@ describe("remote audio inventory", () => {
       deleting: 1,
       deleted: 1,
     });
+  });
+});
+
+describe("local generation fallback", () => {
+  it("prefers local progress until the same task has synced to cloud", () => {
+    const cloud = {
+      task_id: "task-1",
+      book_id: "book-long",
+      chapter_id: "chapter-1",
+      status: "QUEUED" as const,
+      priority: 1_000,
+    };
+    const local = {
+      ...cloud,
+      owner_uid: "owner-1",
+      status: "READY" as const,
+      execution_mode: "LOCAL" as const,
+      sync_status: "PENDING" as const,
+    };
+
+    expect(mergeGenerationTasks([cloud], [local])).toEqual([local]);
+    expect(buildGenerationQueue([local], [longBook()])[0]).toMatchObject({
+      status: "COMPLETED",
+      local_only: true,
+    });
+    expect(mergeGenerationTasks([cloud], [{ ...local, sync_status: "SYNCED" }])).toEqual([cloud]);
+  });
+
+  it("keeps a loopback audio URL while local audio is waiting for sync", () => {
+    const base = {
+      owner_uid: "owner-1",
+      task_id: "task-1",
+      book_id: "book-long",
+      chunk_id: "chunk-1",
+      chapter_id: "chapter-1",
+      status: "READY" as const,
+      start_segment_id: "segment-000",
+      end_segment_id: "segment-001",
+      duration_seconds: 60,
+      asset_id: 1,
+      asset_url: "https://example.invalid/audio.m4a",
+      sha256: "a".repeat(64),
+      byte_size: 100,
+      timeline_asset_id: 2,
+      timeline_url: "https://example.invalid/timeline.json.gz",
+      timeline_sha256: "b".repeat(64),
+      voice_version: "voice-1",
+      deletion_generation: 0,
+    };
+    const local = {
+      ...base,
+      asset_url: "http://127.0.0.1:17832/v1/local-generation/assets/task-1/audio",
+      storage_mode: "LOCAL_MAC" as const,
+      execution_mode: "LOCAL" as const,
+      sync_status: "PENDING" as const,
+    };
+
+    expect(mergeAudioChunks([base], [local])).toEqual([local]);
+    expect(mergeAudioChunks([base], [{ ...local, sync_status: "SYNCED" }])).toEqual([base]);
   });
 });

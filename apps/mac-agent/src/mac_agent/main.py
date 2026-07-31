@@ -6,6 +6,7 @@ from .app import create_app
 from .cleanup import clean_expired_generation_files
 from .firebase_rest import FirebasePublicConfig, FirebaseRestClient
 from .library import LocalLibrary
+from .local_generation import LocalGenerationStore
 from .paths import AGENT_PORT, data_root
 from .pairing import FirebasePairingProvider
 from .picker import NativeBookPicker, NativeVoicePicker
@@ -25,6 +26,7 @@ def main() -> None:
     config = FirebasePublicConfig.load()
     client = FirebaseRestClient(config) if config else None
     pairing = FirebasePairingProvider(client)
+    local_tasks = LocalGenerationStore(root / "local-generation")
     worker = None
     if client:
         worker = MacGenerationWorker(
@@ -35,6 +37,7 @@ def main() -> None:
             generator_factory=default_qwen_factory,
             work_root=root / "generation",
             repository="MKasumi1007/free-cross-device-audiobook",
+            local_tasks=local_tasks,
         )
     previews = VoicePreviewService(
         voices,

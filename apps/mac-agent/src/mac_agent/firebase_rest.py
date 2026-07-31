@@ -145,10 +145,17 @@ class FirebaseRestClient:
                 if status == 401
                 else "FIRESTORE_PERMISSION_DENIED"
                 if status == 403
+                else "FIREBASE_QUOTA_EXHAUSTED"
+                if status == 429
                 else "FIREBASE_API_FAILED"
             )
+            message = (
+                "今日免费云同步额度已暂停，本地生成仍可继续，稍后会自动重试。"
+                if status == 429
+                else f"{label}失败（HTTP {status}），没有保存任何账号凭据。"
+            )
             raise FirebaseRestError(
-                f"{label}失败（HTTP {status}），没有保存任何账号凭据。",
+                message,
                 code=error_code,
                 details={
                     "firebase_operation": label,

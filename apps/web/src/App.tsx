@@ -7,20 +7,27 @@ import {
   chooseBookOnMac,
   chooseVoiceOnMac,
   confirmVoice,
+  getLocalGenerationStatus,
   getVoiceStatus,
   loadVoicePreview,
+  reorderLocalGenerationTasks,
   startPairingOnMac,
   startVoicePreview,
+  updateLocalGenerationTasks,
+  type LocalGenerationStatus,
   type VoiceStatus,
 } from "./agent";
 import { signInWithGoogle, signOutCurrentUser, watchAuth } from "./auth";
 import {
   buildGenerationQueue,
+  enqueueGenerationChapters,
   generationTaskIsLive,
   loadVoiceGenerationProfile,
   loadCloudProgress,
   loadRemoteBook,
   markBookListened,
+  mergeAudioChunks,
+  mergeGenerationTasks,
   reorderGenerationQueue,
   requestBookDeletion,
   requestAudioRepair,
@@ -188,8 +195,9 @@ export function App() {
   const [voicePreviewObjectUrl, setVoicePreviewObjectUrl] = useState("");
   const [pairingCode, setPairingCode] = useState("");
   const [workerLinks, setWorkerLinks] = useState<WorkerLink[]>([]);
-  const [audioChunks, setAudioChunks] = useState<AudioChunk[]>([]);
-  const [generationTasks, setGenerationTasks] = useState<GenerationTaskSummary[]>([]);
+  const [cloudAudioChunks, setCloudAudioChunks] = useState<AudioChunk[]>([]);
+  const [cloudGenerationTasks, setCloudGenerationTasks] = useState<GenerationTaskSummary[]>([]);
+  const [localGeneration, setLocalGeneration] = useState<LocalGenerationStatus | null>(null);
   const [cloudVoiceVersion, setCloudVoiceVersion] = useState("");
   const [bookmarks, setBookmarks] = useState<CloudBookmark[]>([]);
   const [resumeProgress, setResumeProgress] = useState<LocalProgress | null>(null);
@@ -203,6 +211,7 @@ export function App() {
   const progressQueues = useRef(new Map<string, Promise<void>>());
   const currentProgress = useRef<LocalProgress | null>(null);
   const jumpSequence = useRef(0);
+  const localSyncRequested = useRef(new Set<string>());
   const firebaseConfigured = firebaseIsConfigured();
 
   useEffect(() => watchAuth(setUser), []);
@@ -212,6 +221,15 @@ export function App() {
     document.addEventListener("visibilitychange", updateVisibility);
     return () => document.removeEventListener("visibilitychange", updateVisibility);
   }, []);
+
+  useEffect(() => {
+    if (!cloudSyncPaused) return;
+    const checkForNewDay = () => {
+      if (!cloudSyncIsPaused()) setCloudSyncPaused(false);
+    };
+    const timer = window.setInterval(checkForNewDay, 60_000);
+    return () => window.clearInterval(timer);
+  }, [cloudSyncPaused]);
 
   useEffect(() => {
     const pauseSync = () => {
@@ -294,7 +312,7 @@ export function App() {
 
   useEffect(() => {
     if (!user || !pageVisible || cloudSyncPaused) {
-      setGenerationTasks([]);
+      setCloudGenerationTasks([]);
       if (!user) setCloudVoiceVersion("");
       return;
     }
@@ -304,7 +322,7 @@ export function App() {
         if (active && profile?.confirmed) setCloudVoiceVersion(profile.voice_version);
       })
       .catch((error) => handleSyncError(classifyFirebaseError(error)));
-    const stopTasks = watchGenerationTasks(user.uid, setGenerationTasks, handleSyncError);
+    const stopTasks = watchGenerationTasks(user.uid, setCloudGenerationTasks, handleSyncError);
     return () => {
       active = false;
       stopTasks();
@@ -333,6 +351,68 @@ export function App() {
       window.clearTimeout(timer);
     };
   }, [canAdd, showVoice, voiceStatus?.preview.state]);
+
+  useEffect(() => {
+    if (!canAdd || !pageVisible) {
+      setLocalGeneration(null);
+      return;
+    }
+    let active = true;
+    const refresh = async () => {
+      try {
+        const status = await getLocalGenerationStatus();
+        if (active) setLocalGeneration(status);
+      } catch {
+        if (active) setLocalGeneration(null);
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [canAdd, pageVisible]);
+
+  useEffect(() => {
+    if (!user || cloudSyncPaused || !localGeneration) return;
+    const pending = localGeneration.tasks.filter((task) => (
+      task.owner_uid === user.uid
+      && task.status === "READY"
+      && task.sync_status !== "SYNCED"
+      && !localSyncRequested.current.has(task.task_id)
+    ));
+    if (!pending.length) return;
+    const byVoice = new Map<string, GenerationTaskSummary[]>();
+    for (const task of pending) {
+      const voiceVersion = task.voice_version || "";
+      if (!voiceVersion) continue;
+      byVoice.set(voiceVersion, [...(byVoice.get(voiceVersion) || []), task]);
+      localSyncRequested.current.add(task.task_id);
+    }
+    void (async () => {
+      for (const [voiceVersion, tasks] of byVoice) {
+        const taskIds = tasks.map((task) => task.task_id);
+        try {
+          const selections = books
+            .map((book) => ({
+              book,
+              chapter_ids: [...new Set(tasks
+                .filter((task) => task.book_id === book.book_id)
+                .map((task) => task.chapter_id || "")
+                .filter(Boolean))],
+            }))
+            .filter((selection) => selection.chapter_ids.length > 0);
+          if (selections.length) {
+            await enqueueGenerationChapters(user.uid, selections, voiceVersion);
+          }
+        } catch (error) {
+          taskIds.forEach((taskId) => localSyncRequested.current.delete(taskId));
+          handleSyncError(classifyFirebaseError(error));
+        }
+      }
+    })();
+  }, [books, cloudSyncPaused, localGeneration, user]);
 
   useEffect(() => {
     if (!user || !voiceStatus?.confirmed || !voiceStatus.voice_version || cloudSyncPaused) return;
@@ -369,9 +449,21 @@ export function App() {
   const selectedBook = visibleBooks.find((book) => book.book_id === selectedBookId);
   const selectedChapter = selectedBook?.chapters.find((chapter) => chapter.chapter_id === selectedChapterId)
     ?? selectedBook?.chapters[0];
+  const localTasks = user
+    ? (localGeneration?.tasks || []).filter((task) => task.owner_uid === user.uid)
+    : [];
+  const generationTasks = mergeGenerationTasks(cloudGenerationTasks, localTasks);
+  const allLocalAudioChunks = user
+    ? (localGeneration?.audio_chunks || []).filter((chunk) => chunk.owner_uid === user.uid)
+    : [];
+  const localAudioChunks = selectedBook
+    ? allLocalAudioChunks.filter((chunk) => chunk.book_id === selectedBook.book_id)
+    : [];
+  const audioChunks = mergeAudioChunks(cloudAudioChunks, localAudioChunks);
   const activeMac = workerLinks.find((link) => !link.revoked_at);
   const macOnline = E2E_PLAYER_MODE
     || workerIsOnline(activeMac)
+    || localGeneration !== null
     || generationTasks.some(generationTaskIsLive);
   const effectiveVoiceVersion = voiceStatus?.confirmed && voiceStatus.voice_version
     ? voiceStatus.voice_version
@@ -386,19 +478,19 @@ export function App() {
 
   useEffect(() => {
     if (E2E_PLAYER_MODE && selectedBook) {
-      setAudioChunks(e2eAudioChunks(selectedBook));
+      setCloudAudioChunks(e2eAudioChunks(selectedBook));
       setBookmarks([]);
       return;
     }
     if (!user || !selectedBook || !pageVisible || cloudSyncPaused) {
-      setAudioChunks([]);
+      setCloudAudioChunks([]);
       setBookmarks([]);
       return;
     }
     const stopAudio = watchAudioChunks(
       user.uid,
       selectedBook.book_id,
-      setAudioChunks,
+      setCloudAudioChunks,
       handleSyncError,
     );
     const stopBookmarks = watchBookmarks(
@@ -823,7 +915,17 @@ export function App() {
     if (!user) return;
     setDirectoryActionBusy(item.queue_id);
     try {
-      const changed = await updateGenerationQueueItem(user.uid, item.task_ids, "RESUME");
+      const localTaskIds = item.task_ids.filter((taskId) => (
+        generationTasks.find((task) => task.task_id === taskId)?.execution_mode === "LOCAL"
+      ));
+      const cloudTaskIds = item.task_ids.filter((taskId) => !localTaskIds.includes(taskId));
+      let changed = 0;
+      if (localTaskIds.length) {
+        changed += await updateLocalGenerationTasks(localTaskIds, "RESUME");
+      }
+      if (cloudTaskIds.length) {
+        changed += await updateGenerationQueueItem(user.uid, cloudTaskIds, "RESUME");
+      }
       setNotice(changed
         ? "这一章已继续生成，Mac 会自动接着处理。"
         : "这一章的状态已经更新，不需要重复操作。");
@@ -846,7 +948,18 @@ export function App() {
     ));
     setDirectoryActionBusy(item.queue_id);
     try {
-      await reorderGenerationQueue(user.uid, [...generating, item, ...movable]);
+      const ordered = [...generating, item, ...movable];
+      const localTaskIds = ordered.flatMap((entry) => entry.task_ids.filter((taskId) => (
+        generationTasks.find((task) => task.task_id === taskId)?.execution_mode === "LOCAL"
+      )));
+      const cloudItems = ordered
+        .map((entry) => ({
+          ...entry,
+          task_ids: entry.task_ids.filter((taskId) => !localTaskIds.includes(taskId)),
+        }))
+        .filter((entry) => entry.task_ids.length > 0);
+      if (localTaskIds.length) await reorderLocalGenerationTasks(localTaskIds);
+      if (cloudItems.length) await reorderGenerationQueue(user.uid, cloudItems);
       setNotice(generating.length
         ? "已置顶；当前章节完成后，会优先生成这一章。"
         : "已置顶；这一章会优先生成。");
@@ -1389,6 +1502,8 @@ export function App() {
           initialBookId={selectedBook?.book_id}
           initialChapterId={selectedChapter?.chapter_id}
           macOnline={macOnline}
+          localMode={cloudSyncPaused}
+          localAudioChunks={allLocalAudioChunks}
           onClose={() => setShowGenerationQueue(false)}
           onNotice={setNotice}
           onOpenAudioManager={() => {

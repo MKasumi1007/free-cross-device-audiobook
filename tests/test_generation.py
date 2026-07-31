@@ -84,6 +84,10 @@ class FakePrivatePublisher(FakePublisher):
         )
 
 
+class FakeLocalPublisher(FakePrivatePublisher):
+    storage_mode = "LOCAL_MAC"
+
+
 class FakeFence:
     def __init__(self, fail_after: int | None = None) -> None:
         self.calls = 0
@@ -220,6 +224,22 @@ def test_local_only_book_can_generate_only_with_private_publisher(tmp_path: Path
 
     assert result.duration_seconds == 7.5
     assert len(publisher.published) == 2
+    assert generator.calls
+
+
+def test_local_only_book_can_generate_to_mac_without_cloud_upload(tmp_path: Path) -> None:
+    generator = FakeGenerator()
+    publisher = FakeLocalPublisher()
+    result = ChunkPipeline(
+        tmp_path,
+        generator,
+        publisher,
+        FakeFence(),
+        encoder=FakeEncoder(),
+    ).run(make_job(PublicationMode.LOCAL_ONLY))
+
+    assert result.audio.storage_mode == "LOCAL_MAC"
+    assert result.timeline.storage_mode == "LOCAL_MAC"
     assert generator.calls
 
 

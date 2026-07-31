@@ -65,7 +65,9 @@ export interface AudioChunk {
   timeline_asset_id: number | null;
   timeline_url: string | null;
   timeline_sha256: string;
-  storage_mode?: "PUBLIC_GITHUB" | "PRIVATE_FIRESTORE";
+  storage_mode?: "PUBLIC_GITHUB" | "PRIVATE_FIRESTORE" | "LOCAL_MAC";
+  execution_mode?: "CLOUD" | "LOCAL";
+  sync_status?: "PENDING" | "SYNCING" | "FAILED" | "SYNCED";
   private_audio_key?: string | null;
   private_timeline_key?: string | null;
   private_audio_parts?: number;
@@ -134,6 +136,7 @@ export type GenerationTaskStatus =
   | "CANCELLED";
 
 export interface GenerationTaskSummary {
+  owner_uid?: string;
   task_id: string;
   book_id: string;
   chapter_id?: string;
@@ -162,6 +165,8 @@ export interface GenerationTaskSummary {
   progress_eta_seconds?: number | null;
   progress_started_at?: unknown;
   lease_deadline?: unknown;
+  execution_mode?: "CLOUD" | "LOCAL";
+  sync_status?: "PENDING" | "SYNCING" | "FAILED" | "SYNCED";
 }
 
 export type GenerationQueueStatus =
@@ -195,6 +200,7 @@ export interface GenerationQueueItem {
   eta_seconds: number | null;
   chapter_eta_seconds: number | null;
   historical_pause: boolean;
+  local_only: boolean;
 }
 
 export interface VoiceGenerationProfile {
@@ -596,6 +602,31 @@ export function generationTaskIsLive(task: GenerationTaskSummary): boolean {
   return deadline == null || deadline > Date.now();
 }
 
+export function mergeGenerationTasks(
+  cloudTasks: readonly GenerationTaskSummary[],
+  localTasks: readonly GenerationTaskSummary[],
+): GenerationTaskSummary[] {
+  const merged = new Map(cloudTasks.map((task) => [task.task_id, task]));
+  for (const local of localTasks) {
+    if (local.sync_status === "SYNCED" && merged.has(local.task_id)) continue;
+    merged.set(local.task_id, local);
+  }
+  return [...merged.values()];
+}
+
+export function mergeAudioChunks(
+  cloudChunks: readonly AudioChunk[],
+  localChunks: readonly AudioChunk[],
+): AudioChunk[] {
+  const merged = new Map(cloudChunks.map((chunk) => [chunk.task_id || chunk.chunk_id, chunk]));
+  for (const local of localChunks) {
+    const key = local.task_id || local.chunk_id;
+    if (local.sync_status === "SYNCED" && merged.has(key)) continue;
+    merged.set(key, local);
+  }
+  return [...merged.values()];
+}
+
 function queueStatus(tasks: readonly GenerationTaskSummary[]): GenerationQueueStatus {
   if (tasks.some(generationTaskIsLive)) return "GENERATING";
   if (tasks.some((task) => task.status === "FAILED_RETRYABLE" || task.status === "FAILED_FINAL")) {
@@ -708,6 +739,9 @@ export function buildGenerationQueue(
           && task.pause_reason === "USER_PAUSED"
           && Number(task.attempt_id || 0) > 0
           && !task.progress_stage
+        )),
+        local_only: ordered.some((task) => (
+          task.execution_mode === "LOCAL" && task.sync_status !== "SYNCED"
         )),
       };
     })

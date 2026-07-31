@@ -14,7 +14,10 @@ export function classifyFirebaseError(error: unknown): SyncError {
   }
   if (code.includes("resource-exhausted") || code.includes("quota-exceeded")) {
     pauseCloudSync("REMOTE_QUOTA");
-    return { kind: "FREE_QUOTA", message: "今日免费同步额度已暂停，本机内容仍可继续使用，明天会自动恢复。" };
+    return {
+      kind: "FREE_QUOTA",
+      message: "今日免费云同步额度已暂停；这台 Mac 仍可本地生成和播放，明天会自动恢复并同步。",
+    };
   }
   if (code.includes("unavailable") || code.includes("network-request-failed") || code.includes("deadline-exceeded")) {
     return { kind: "OFFLINE", message: "网络暂时不可用，进度已保存在本机，恢复后会再同步。" };

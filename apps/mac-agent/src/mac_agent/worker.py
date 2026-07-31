@@ -12,9 +12,18 @@ from audiobook_core.planning import plan_generation_batch
 
 from .book_assets import BookTextPublisher
 from .cleanup import clean_expired_generation_files
-from .generation import ChunkJob, ChunkPipeline, GenerationError, SegmentGenerator, SegmentJob
+from .generation import (
+    ChunkJob,
+    ChunkPipeline,
+    GenerationError,
+    PublishedChunk,
+    SegmentGenerator,
+    SegmentJob,
+)
 from .error_reporting import reporter
+from .firebase_rest import FirebaseRestError
 from .library import LocalLibrary
+from .local_generation import LocalAssetPublisher, LocalFence, LocalGenerationStore
 from .private_assets import FirestorePrivateAssetPublisher
 from .repository_assets import GitHubAudiobookPublisher, GitHubRepositoryAssetPublisher
 from .reconciliation import AudioReconciler
@@ -142,6 +151,7 @@ class MacGenerationWorker:
         generator_factory: GeneratorFactory,
         work_root: Path,
         repository: str,
+        local_tasks: LocalGenerationStore | None = None,
     ) -> None:
         self.tasks = tasks
         self.library = library
@@ -150,7 +160,9 @@ class MacGenerationWorker:
         self.generator_factory = generator_factory
         self.work_root = work_root
         self.repository = repository
+        self.local_tasks = local_tasks
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._generator: SegmentGenerator | None = None
         self._voice_version = ""
@@ -163,6 +175,9 @@ class MacGenerationWorker:
         self._last_reconciliation = float("-inf")
         self._ready_audio_seconds: float | None = None
         self._last_capacity_check = float("-inf")
+        self._cloud_failure_count = 0
+        self._cloud_backoff_until = 0.0
+        self._cloud_backoff_seconds = 0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -172,6 +187,7 @@ class MacGenerationWorker:
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         if self._thread:
             self._thread.join(timeout=5)
         self._unload_generator()
@@ -180,21 +196,41 @@ class MacGenerationWorker:
         while not self._stop.is_set():
             try:
                 worked = self.run_once()
+                if (
+                    self._cloud_failure_count
+                    and self.last_state != "FREE_QUOTA_LOCAL_READY"
+                    and not self.last_state.startswith("LOCAL_")
+                ):
+                    self._clear_cloud_backoff()
                 self.last_error = ""
             except Exception as error:
                 worked = False
-                self.last_state = "ERROR"
+                if self._is_quota_error(error):
+                    self._activate_cloud_backoff()
+                    self.last_state = "FREE_QUOTA_LOCAL_READY"
+                    self.last_error = "免费云同步额度已暂停，本地生成仍可继续。"
+                else:
+                    self.last_state = "ERROR"
+                    self.last_error = "后台生成暂时中断，完整原因已写入本机日志。"
                 reporter.record(
                     "worker.run_forever",
                     error,
                     code=getattr(error, "code", "BACKGROUND_WORKER_FAILED"),
                     details={"last_state": self.last_state},
                 )
-                self.last_error = "后台生成暂时中断，完整原因已写入本机日志。"
-            delay = 1 if worked else self.policy.load().poll_seconds
-            self._stop.wait(delay)
+            delay = self._next_delay(worked)
+            self._wake.wait(delay)
+            self._wake.clear()
 
     def run_once(self) -> bool:
+        self._periodic_cleanup()
+        if self.local_tasks:
+            local_task = self.local_tasks.next_task()
+            if local_task is not None:
+                return self._process_local_task(local_task)
+        if time.monotonic() < self._cloud_backoff_until:
+            self.last_state = "FREE_QUOTA_LOCAL_READY"
+            return False
         owner_uid = self.tasks.active_owner()
         if owner_uid is None:
             self.last_state = "WAITING_FOR_PAIRING"
@@ -202,7 +238,6 @@ class MacGenerationWorker:
         if time.monotonic() - self._last_presence >= 4 * 60:
             self.tasks.touch_presence()
             self._last_presence = time.monotonic()
-        self._periodic_cleanup()
         self._periodic_retention(owner_uid)
         deletion = self.tasks.next_deletion(owner_uid)
         if deletion is not None:
@@ -273,6 +308,9 @@ class MacGenerationWorker:
         fence.start()
         try:
             self._ensure_book_text(fence.task.owner_uid, fence.task.task_id, book)
+            if self._publish_local_ready(fence.task, book, profile, fence):
+                self.last_state = "LOCAL_SYNCED"
+                return True
             job = self._make_job(book, task, profile)
             generator = self._generator_for(profile)
             self.last_state = "GENERATING"
@@ -327,6 +365,227 @@ class MacGenerationWorker:
         finally:
             fence.stop()
             self._unload_generator()
+
+    def _process_local_task(self, pending: dict[str, object]) -> bool:
+        if self.local_tasks is None:
+            return False
+        task_id = str(pending["task_id"])
+        pause_reason = self.policy.pause_reason()
+        if pause_reason:
+            self._unload_generator()
+            self.local_tasks.pause_for_resource(task_id, pause_reason)
+            self.last_state = pause_reason
+            return False
+        profile = self.voices.load()
+        if profile is None or not profile.confirmed:
+            self._unload_generator()
+            self.last_state = "WAITING_FOR_VOICE"
+            return False
+        book = self.library.get(str(pending["book_id"]))
+        if book is None:
+            self.local_tasks.pause_for_resource(task_id, "WAITING_FOR_MAC")
+            self.last_state = "WAITING_FOR_MAC"
+            return False
+        claimed = self.local_tasks.claim(task_id)
+        if str(claimed.get("voice_version") or "") != profile.voice_version:
+            self.local_tasks.pause_for_resource(task_id, "VOICE_VERSION_CHANGED")
+            self.last_state = "VOICE_VERSION_CHANGED"
+            return False
+        task = CloudTask(
+            owner_uid=str(claimed.get("owner_uid") or ""),
+            task_id=task_id,
+            book_id=book.book_id,
+            status="GENERATING",
+            priority=int(claimed.get("priority") or 0),
+            attempt_id=int(claimed.get("attempt_id") or 0),
+            deletion_generation=int(claimed.get("deletion_generation") or 0),
+            start_segment_id=str(claimed.get("start_segment_id") or "") or None,
+            target_seconds=float(claimed.get("target_seconds") or 600),
+            voice_version=profile.voice_version,
+            storage_mode="LOCAL_MAC",
+            lease_token=str(claimed.get("lease_token") or ""),
+        )
+        fence = LocalFence(self.local_tasks, claimed)
+        try:
+            job = self._make_job(book, task, profile)
+            generator = self._generator_for(profile)
+            self.last_state = "LOCAL_GENERATING"
+            publisher = LocalAssetPublisher(self.local_tasks.assets_root, task_id)
+            pipeline = ChunkPipeline(
+                self.work_root,
+                generator,
+                publisher,
+                fence,
+                observer=fence,
+            )
+            published = pipeline.run(job)
+            self.local_tasks.record_ready(task_id, job, published)
+            self.last_state = "LOCAL_READY_WAITING_SYNC"
+            self.last_error = ""
+            return True
+        except GenerationError as error:
+            reporter.record(
+                "worker.generate_local_chunk",
+                error,
+                code=error.code,
+                details={"task_id": task_id, "book_id": book.book_id},
+            )
+            retry_at = datetime.now(UTC) + self._retry_delay(
+                error.code,
+                int(claimed.get("attempt_id") or 1),
+            )
+            self.local_tasks.fail(
+                task_id,
+                error.code,
+                "本地生成暂时中断，稍后会从检查点继续。",
+                retry_at,
+            )
+            self.last_state = "LOCAL_FAILED_RETRYABLE"
+            self.last_error = str(error)
+            return True
+        finally:
+            self._unload_generator()
+
+    def _publish_local_ready(
+        self,
+        task: CloudTask,
+        book: ParsedBook,
+        profile: VoiceProfile,
+        fence: RenewingFence,
+    ) -> bool:
+        if self.local_tasks is None:
+            return False
+        local = self.local_tasks.task(task.task_id)
+        if local is None or local.get("status") != "READY":
+            return False
+        audio_path = self.local_tasks.asset_path(task.task_id, "audio")
+        timeline_path = self.local_tasks.asset_path(task.task_id, "timeline")
+        if audio_path is None or timeline_path is None:
+            self.local_tasks.mark_sync_pending(task.task_id, "本地音频文件不完整。")
+            return False
+        job = self._make_job(book, task, profile)
+        self.local_tasks.mark_syncing(task.task_id)
+        try:
+            publisher = (
+                FirestorePrivateAssetPublisher(
+                    self.tasks.client,
+                    task.owner_uid,
+                    task_id=task.task_id,
+                )
+                if book.publication_mode is PublicationMode.LOCAL_ONLY
+                else GitHubAudiobookPublisher(self.repository)
+            )
+            audio = publisher.publish(
+                book.book_id,
+                audio_path,
+                str(local.get("asset_name") or audio_path.name),
+            )
+            timeline = publisher.publish(
+                book.book_id,
+                timeline_path,
+                str(local.get("timeline_name") or timeline_path.name),
+            )
+            published = PublishedChunk(
+                chunk_id=job.chunk_id,
+                duration_seconds=float(local.get("duration_seconds") or 0),
+                audio=audio,
+                timeline=timeline,
+                reused=True,
+            )
+            self.tasks.record_ready(fence.task, job, published)
+            fence.state("READY")
+            self.local_tasks.mark_synced(task.task_id)
+            return True
+        except Exception as error:
+            self.local_tasks.mark_sync_pending(task.task_id, str(error))
+            raise
+
+    def enqueue_local(
+        self,
+        owner_uid: str,
+        selections: list[dict[str, object]],
+        voice_version: str,
+    ) -> dict[str, int]:
+        if self.local_tasks is None:
+            raise RuntimeError("本地生成队列尚未启用。")
+        totals = {"chapters": 0, "created": 0, "resumed": 0, "unchanged": 0}
+        for selection in selections:
+            book = self.library.get(str(selection.get("book_id") or ""))
+            if book is None:
+                raise ValueError("这本书尚未保存在当前 Mac，无法本地生成。")
+            raw_chapter_ids = selection.get("chapter_ids")
+            chapter_ids = (
+                [str(value) for value in raw_chapter_ids]
+                if isinstance(raw_chapter_ids, list)
+                else []
+            )
+            result = self.local_tasks.enqueue(owner_uid, book, chapter_ids, voice_version)
+            for name in totals:
+                totals[name] += int(result[name])
+        self._wake.set()
+        return totals
+
+    def local_status(self) -> dict[str, object]:
+        status = self.local_tasks.status() if self.local_tasks else {
+            "schema_version": 1,
+            "tasks": [],
+            "audio_chunks": [],
+            "pending_sync": 0,
+        }
+        status["worker"] = self.status()
+        return status
+
+    def local_action(self, task_ids: list[str], action: str) -> int:
+        if self.local_tasks is None:
+            return 0
+        changed = self.local_tasks.act(task_ids, action)
+        self._wake.set()
+        return changed
+
+    def local_reorder(self, task_ids: list[str]) -> int:
+        if self.local_tasks is None:
+            return 0
+        changed = self.local_tasks.reorder(task_ids)
+        self._wake.set()
+        return changed
+
+    def local_asset(self, task_id: str, kind: str) -> Path | None:
+        return self.local_tasks.asset_path(task_id, kind) if self.local_tasks else None
+
+    @staticmethod
+    def _is_quota_error(error: Exception) -> bool:
+        return (
+            isinstance(error, FirebaseRestError)
+            and (
+                getattr(error, "code", "") == "FIREBASE_QUOTA_EXHAUSTED"
+                or int(getattr(error, "details", {}).get("http_status") or 0) == 429
+            )
+        )
+
+    def _activate_cloud_backoff(self) -> None:
+        schedule = (5 * 60, 30 * 60, 2 * 60 * 60, 6 * 60 * 60)
+        self._cloud_failure_count += 1
+        self._cloud_backoff_seconds = schedule[min(self._cloud_failure_count - 1, len(schedule) - 1)]
+        self._cloud_backoff_until = time.monotonic() + self._cloud_backoff_seconds
+
+    def _clear_cloud_backoff(self) -> None:
+        self._cloud_failure_count = 0
+        self._cloud_backoff_until = 0.0
+        self._cloud_backoff_seconds = 0
+
+    def _next_delay(self, worked: bool) -> float:
+        if worked:
+            return 1
+        remaining = self._cloud_backoff_until - time.monotonic()
+        if remaining > 0:
+            return remaining
+        settings = self.policy.load()
+        if self.last_state in {
+            "IDLE", "WAITING_FOR_PAIRING", "WAITING_FOR_VOICE", "WAITING_FOR_MAC",
+            "MEMORY_PRESSURE", "WAITING_FOR_AC_POWER", "FREE_QUOTA_LOCAL_READY",
+        }:
+            return settings.idle_poll_seconds
+        return settings.poll_seconds
 
     def _process_deletion(self, deletion: CloudDeletion) -> bool:
         claimed = self.tasks.claim_deletion(deletion)
@@ -485,11 +744,17 @@ class MacGenerationWorker:
         seconds = min(maximum, base * (2 ** max(0, min(attempt - 1, 8))))
         return timedelta(seconds=seconds)
 
-    def status(self) -> dict[str, str | bool]:
+    def status(self) -> dict[str, str | bool | int]:
+        remaining = max(0, round(self._cloud_backoff_until - time.monotonic()))
         return {
             "state": self.last_state,
             "error": self.last_error,
             "model_loaded": bool(getattr(self._generator, "loaded", False)),
+            "cloud_backoff_seconds": remaining,
+            "local_pending_sync": (
+                int(self.local_tasks.status()["pending_sync"])
+                if self.local_tasks else 0
+            ),
         }
 
     def model_loaded(self) -> bool:

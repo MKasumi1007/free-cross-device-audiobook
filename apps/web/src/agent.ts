@@ -1,5 +1,7 @@
 import { parsedBookSchema, type ParsedBook } from "@audiobook/contracts";
 
+import type { AudioChunk, GenerationTaskSummary } from "./cloud";
+
 export const AGENT_BASE_URL = "http://127.0.0.1:17832";
 
 interface AgentSession {
@@ -40,7 +42,13 @@ export interface AgentDiagnostics {
   agent_port: number;
   data_root: string;
   log_path: string;
-  worker: { state: string; error: string; model_loaded: boolean };
+  worker: {
+    state: string;
+    error: string;
+    model_loaded: boolean;
+    cloud_backoff_seconds?: number;
+    local_pending_sync?: number;
+  };
   recent_error: null | {
     timestamp: string;
     operation: string;
@@ -48,6 +56,26 @@ export interface AgentDiagnostics {
     message: string;
   };
   items: AgentDiagnosticItem[];
+}
+
+export interface LocalGenerationSelection {
+  book_id: string;
+  chapter_ids: string[];
+}
+
+export interface LocalGenerationResult {
+  chapters: number;
+  created: number;
+  resumed: number;
+  unchanged: number;
+}
+
+export interface LocalGenerationStatus {
+  schema_version: number;
+  tasks: GenerationTaskSummary[];
+  audio_chunks: AudioChunk[];
+  pending_sync: number;
+  worker: AgentDiagnostics["worker"];
 }
 
 interface AgentErrorPayload {
@@ -181,4 +209,44 @@ export async function getAgentDiagnostics(): Promise<AgentDiagnostics> {
 export async function startAgentRepair(action: string): Promise<void> {
   const response = await postVoice("/v1/diagnostics/repair", { action });
   if (!response.ok) throw await responseError(response);
+}
+
+export async function getLocalGenerationStatus(): Promise<LocalGenerationStatus> {
+  const response = await fetch(`${AGENT_BASE_URL}/v1/local-generation/status`, {
+    cache: "no-store",
+  });
+  if (!response.ok) throw await responseError(response);
+  return await response.json() as LocalGenerationStatus;
+}
+
+export async function enqueueLocalGeneration(
+  ownerUid: string,
+  selections: readonly LocalGenerationSelection[],
+  voiceVersion: string,
+): Promise<LocalGenerationResult> {
+  const response = await postVoice("/v1/local-generation/enqueue", {
+    owner_uid: ownerUid,
+    selections,
+    voice_version: voiceVersion,
+  });
+  if (!response.ok) throw await responseError(response);
+  return await response.json() as LocalGenerationResult;
+}
+
+export async function updateLocalGenerationTasks(
+  taskIds: readonly string[],
+  action: "PAUSE" | "RESUME" | "REMOVE",
+): Promise<number> {
+  const response = await postVoice("/v1/local-generation/action", {
+    task_ids: taskIds,
+    action,
+  });
+  if (!response.ok) throw await responseError(response);
+  return Number(((await response.json()) as { changed?: number }).changed || 0);
+}
+
+export async function reorderLocalGenerationTasks(taskIds: readonly string[]): Promise<number> {
+  const response = await postVoice("/v1/local-generation/reorder", { task_ids: taskIds });
+  if (!response.ok) throw await responseError(response);
+  return Number(((await response.json()) as { changed?: number }).changed || 0);
 }

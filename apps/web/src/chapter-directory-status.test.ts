@@ -80,6 +80,7 @@ function queueItem(
     eta_seconds: null,
     chapter_eta_seconds: null,
     historical_pause: false,
+    local_only: false,
   };
 }
 

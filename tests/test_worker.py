@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from audiobook_core.models import Chapter, ParsedBook, PublicationMode
+from mac_agent.firebase_rest import FirebaseRestError
 from mac_agent.worker import MacGenerationWorker
 
 
@@ -141,3 +142,30 @@ def test_generation_waits_when_five_hour_audio_cache_is_full(tmp_path: Path) -> 
     assert worker._audio_cache_is_full("owner") is True
     assert worker._audio_cache_is_full("owner") is True
     assert tasks.calls == 1
+
+
+def test_quota_failures_use_progressive_backoff_without_disabling_local_work(
+    tmp_path: Path,
+) -> None:
+    worker = MacGenerationWorker(
+        tasks=object(),  # type: ignore[arg-type]
+        library=FakeLibrary({}),  # type: ignore[arg-type]
+        voices=object(),  # type: ignore[arg-type]
+        policy=object(),  # type: ignore[arg-type]
+        generator_factory=lambda _profile: object(),  # type: ignore[arg-type,return-value]
+        work_root=tmp_path,
+        repository="owner/repository",
+    )
+    quota = FirebaseRestError(
+        "quota",
+        code="FIREBASE_QUOTA_EXHAUSTED",
+        details={"http_status": 429},
+    )
+
+    assert worker._is_quota_error(quota) is True
+    observed = []
+    for _ in range(5):
+        worker._activate_cloud_backoff()
+        observed.append(worker._cloud_backoff_seconds)
+
+    assert observed == [300, 1_800, 7_200, 21_600, 21_600]

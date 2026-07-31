@@ -49,6 +49,34 @@ class RepairRequest(BaseModel):
     action: str
 
 
+class LocalGenerationSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    book_id: str
+    chapter_ids: list[str]
+
+
+class LocalGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    owner_uid: str
+    voice_version: str
+    selections: list[LocalGenerationSelection]
+
+
+class LocalQueueActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_ids: list[str]
+    action: str
+
+
+class LocalQueueReorderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_ids: list[str]
+
+
 def create_app(
     *,
     library: LocalLibrary | None = None,
@@ -145,6 +173,90 @@ def create_app(
             )
 
         return JSONResponse(content=await run_in_threadpool(collect))
+
+    @app.get("/v1/local-generation/status")
+    async def local_generation_status() -> Response:
+        status = getattr(worker, "local_status", None)
+        if not callable(status):
+            return JSONResponse(
+                status_code=503,
+                content={"code": "LOCAL_GENERATION_UNAVAILABLE", "error": "本地生成服务尚未启用。"},
+            )
+        return JSONResponse(content=await run_in_threadpool(status))
+
+    @app.post("/v1/local-generation/enqueue")
+    async def enqueue_local_generation(
+        payload: LocalGenerationRequest,
+        request: Request,
+    ) -> Response:
+        if not consume_csrf(request):
+            return JSONResponse(
+                status_code=403,
+                content={"code": "CSRF_EXPIRED", "error": "操作凭证已过期，请重新点击。"},
+            )
+        enqueue = getattr(worker, "enqueue_local", None)
+        if not callable(enqueue):
+            return JSONResponse(
+                status_code=503,
+                content={"code": "LOCAL_GENERATION_UNAVAILABLE", "error": "本地生成服务尚未启用。"},
+            )
+        try:
+            result = await run_in_threadpool(
+                enqueue,
+                payload.owner_uid,
+                [selection.model_dump() for selection in payload.selections],
+                payload.voice_version,
+            )
+        except ValueError as error:
+            return JSONResponse(
+                status_code=422,
+                content={"code": "LOCAL_GENERATION_INVALID", "error": str(error)},
+            )
+        return JSONResponse(status_code=202, content=result)
+
+    @app.post("/v1/local-generation/action")
+    async def update_local_generation(
+        payload: LocalQueueActionRequest,
+        request: Request,
+    ) -> Response:
+        if not consume_csrf(request):
+            return JSONResponse(
+                status_code=403,
+                content={"code": "CSRF_EXPIRED", "error": "操作凭证已过期，请重新点击。"},
+            )
+        action = getattr(worker, "local_action", None)
+        if not callable(action):
+            return JSONResponse(status_code=503, content={"error": "本地生成服务尚未启用。"})
+        try:
+            changed = await run_in_threadpool(action, payload.task_ids, payload.action)
+        except ValueError as error:
+            return JSONResponse(status_code=422, content={"error": str(error)})
+        return JSONResponse(content={"changed": changed})
+
+    @app.post("/v1/local-generation/reorder")
+    async def reorder_local_generation(
+        payload: LocalQueueReorderRequest,
+        request: Request,
+    ) -> Response:
+        if not consume_csrf(request):
+            return JSONResponse(
+                status_code=403,
+                content={"code": "CSRF_EXPIRED", "error": "操作凭证已过期，请重新点击。"},
+            )
+        reorder = getattr(worker, "local_reorder", None)
+        if not callable(reorder):
+            return JSONResponse(status_code=503, content={"error": "本地生成服务尚未启用。"})
+        changed = await run_in_threadpool(reorder, payload.task_ids)
+        return JSONResponse(content={"changed": changed})
+
+    @app.get("/v1/local-generation/assets/{task_id}/{kind}")
+    async def local_generation_asset(task_id: str, kind: str) -> Response:
+        resolve = getattr(worker, "local_asset", None)
+        path = await run_in_threadpool(resolve, task_id, kind) if callable(resolve) else None
+        if not isinstance(path, Path) or not path.is_file():
+            return JSONResponse(status_code=404, content={"error": "本地音频尚未生成完成。"})
+        media_type = "audio/mp4" if kind == "audio" else "application/gzip"
+        return FileResponse(path, media_type=media_type)
 
     @app.post("/v1/diagnostics/repair")
     async def repair_diagnostics(payload: RepairRequest, request: Request) -> Response:

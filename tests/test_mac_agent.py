@@ -319,3 +319,79 @@ def test_slow_diagnostics_does_not_block_health(tmp_path: Path) -> None:
             return elapsed
 
     assert asyncio.run(exercise()) < 0.2
+
+
+def test_local_generation_endpoints_manage_queue_and_serve_audio(tmp_path: Path) -> None:
+    audio = tmp_path / "ready.m4a"
+    audio.write_bytes(b"local audio")
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.enqueued: list[object] = []
+            self.actions: list[tuple[list[str], str]] = []
+            self.orders: list[list[str]] = []
+
+        def local_status(self) -> dict[str, object]:
+            return {
+                "schema_version": 1,
+                "tasks": [],
+                "audio_chunks": [],
+                "pending_sync": 0,
+                "worker": {"state": "IDLE", "error": "", "model_loaded": False},
+            }
+
+        def enqueue_local(
+            self,
+            owner_uid: str,
+            selections: list[dict[str, object]],
+            voice_version: str,
+        ) -> dict[str, int]:
+            self.enqueued.append((owner_uid, selections, voice_version))
+            return {"chapters": 1, "created": 1, "resumed": 0, "unchanged": 0}
+
+        def local_action(self, task_ids: list[str], action: str) -> int:
+            self.actions.append((task_ids, action))
+            return len(task_ids)
+
+        def local_reorder(self, task_ids: list[str]) -> int:
+            self.orders.append(task_ids)
+            return len(task_ids)
+
+        def local_asset(self, task_id: str, kind: str) -> Path | None:
+            return audio if task_id == "task-1" and kind == "audio" else None
+
+    worker = FakeWorker()
+    client = TestClient(create_app(
+        library=LocalLibrary(tmp_path / "library", FakePicker(None)),
+        pairing=FakePairing(),
+        worker=worker,
+    ))
+    origin = {"Origin": ORIGIN}
+
+    assert client.get("/v1/local-generation/status", headers=origin).status_code == 200
+    enqueue = client.post(
+        "/v1/local-generation/enqueue",
+        headers={**origin, "X-Audiobook-CSRF": issue_token(client)},
+        json={
+            "owner_uid": "owner-1",
+            "voice_version": "voice-1",
+            "selections": [{"book_id": "book-1", "chapter_ids": ["chapter-1"]}],
+        },
+    )
+    assert enqueue.status_code == 202
+    assert enqueue.json()["created"] == 1
+    action = client.post(
+        "/v1/local-generation/action",
+        headers={**origin, "X-Audiobook-CSRF": issue_token(client)},
+        json={"task_ids": ["task-1"], "action": "PAUSE"},
+    )
+    assert action.json() == {"changed": 1}
+    reorder = client.post(
+        "/v1/local-generation/reorder",
+        headers={**origin, "X-Audiobook-CSRF": issue_token(client)},
+        json={"task_ids": ["task-1"]},
+    )
+    assert reorder.json() == {"changed": 1}
+    served = client.get("/v1/local-generation/assets/task-1/audio", headers=origin)
+    assert served.status_code == 200
+    assert served.content == b"local audio"

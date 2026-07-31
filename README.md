@@ -4,12 +4,13 @@
 
 在线网页：<https://mkasumi1007.github.io/free-cross-device-audiobook/>
 
-## 当前状态（0.4.0）
+## 当前状态（0.5.0）
 
 | 项目 | 证据状态 |
 | --- | --- |
 | EPUB/TXT 解析、网页、播放器、任务与删除逻辑 | 已编码；通过单元和自动化测试 |
 | 跨书章节待生成列表 | Mac 与手机可选章节、排序、暂停、继续和移除；队列云端持久化 |
+| 免费额度保护与本地生成 | Firestore 429 后自动降频；Mac 本地队列、生成和播放继续，额度恢复后复用已生成文件同步 |
 | 生成可见性与断点续作 | 网页显示当前书/章、阶段、小段、百分比和 ETA；约 40 字保存一个本地断点 |
 | 双击安装、独立 Agent/Qwen 环境、模型、LaunchAgent | 已在真实 Apple Silicon Mac 安装和重载验证 |
 | Qwen 模型加载、中文 WAV、FFmpeg M4A | 已在真实 Mac、MPS 和真实已确认声音上验证 |
@@ -24,7 +25,7 @@
 
 ## 普通用户安装
 
-1. 从 [Releases](https://github.com/MKasumi1007/free-cross-device-audiobook/releases) 下载 `米兰读书安装器-0.4.0.zip`。
+1. 从 [Releases](https://github.com/MKasumi1007/free-cross-device-audiobook/releases) 下载 `米兰读书安装器-0.5.0.zip`。
 2. 解压后双击 `米兰读书安装器.app`。这是未购买 Apple Developer 证书的开源应用；如果 Gatekeeper 拦截，请在 Finder 中右键它、选择“打开”，再确认一次。
 3. 首次安装会自动准备独立 Python、Agent、Qwen 依赖、FFmpeg、约 2.3 GiB 模型，并执行真实中文生成与 M4A 自检。需要网络、Apple Silicon Mac 和至少 6 GiB 可用磁盘；耗时取决于网速与机器。
 4. 安装成功后会自动启动后台服务，并在 `~/Applications/米兰读书/` 放置网页、更新和卸载入口。

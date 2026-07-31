@@ -12,6 +12,7 @@ class GenerationSettings:
     only_on_ac_power: bool = True
     minimum_available_memory_bytes: int = 2 * 1024 * 1024 * 1024
     poll_seconds: int = 15
+    idle_poll_seconds: int = 5 * 60
 
 
 class ResourcePolicy:
