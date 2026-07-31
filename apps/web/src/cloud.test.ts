@@ -270,4 +270,42 @@ describe("local generation fallback", () => {
     expect(mergeAudioChunks([base], [local])).toEqual([local]);
     expect(mergeAudioChunks([base], [{ ...local, sync_status: "SYNCED" }])).toEqual([base]);
   });
+
+  it("orders hybrid chapters by their unfinished local work, not old ready chunks", () => {
+    const queue = buildGenerationQueue([
+      {
+        task_id: "chapter-1-ready-cloud",
+        book_id: "book-long",
+        chapter_id: "chapter-1",
+        status: "READY",
+        priority: 99_000,
+        chunk_order: 0,
+      },
+      {
+        task_id: "chapter-1-pending-local",
+        book_id: "book-long",
+        chapter_id: "chapter-1",
+        status: "QUEUED",
+        priority: 100,
+        chunk_order: 1,
+        execution_mode: "LOCAL",
+        sync_status: "PENDING",
+      },
+      {
+        task_id: "chapter-2-pending-local",
+        book_id: "book-long",
+        chapter_id: "chapter-2",
+        status: "QUEUED",
+        priority: 200,
+        chunk_order: 0,
+        execution_mode: "LOCAL",
+        sync_status: "PENDING",
+      },
+    ], [longBook()]);
+
+    expect(queue.map((item) => item.queue_id)).toEqual([
+      "book-long:chapter-2",
+      "book-long:chapter-1",
+    ]);
+  });
 });

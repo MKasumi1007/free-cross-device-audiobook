@@ -709,6 +709,15 @@ export function buildGenerationQueue(
       const chapterEta = activeEta == null
         ? null
         : activeEta + (realtimeFactor == null ? 0 : remainingAfterActive * realtimeFactor);
+      const pendingPriorityTasks = ordered.filter((task) => (
+        task.status !== "READY" && task.status !== "CANCELLED"
+      ));
+      const localPriorityTasks = pendingPriorityTasks.filter((task) => (
+        task.execution_mode === "LOCAL" && task.sync_status !== "SYNCED"
+      ));
+      const priorityTasks = localPriorityTasks.length
+        ? localPriorityTasks
+        : pendingPriorityTasks.length ? pendingPriorityTasks : ordered;
       return {
         queue_id: queueId,
         book_id: group.book_id,
@@ -716,7 +725,7 @@ export function buildGenerationQueue(
         book_title: group.book_title,
         chapter_title: group.chapter_title,
         status: queueStatus(ordered),
-        priority: Math.max(...ordered.map((task) => Number(task.priority || 0))),
+        priority: Math.max(...priorityTasks.map((task) => Number(task.priority || 0))),
         task_ids: ordered.map((task) => task.task_id),
         total_chunks: ordered.length,
         ready_chunks: ready,
