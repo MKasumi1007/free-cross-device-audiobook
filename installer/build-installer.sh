@@ -7,6 +7,7 @@ OUTPUT="${1:-$ROOT/dist/installer}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/audiobook-package.XXXXXX")"
 trap '/bin/rm -rf "$WORK"' EXIT
 APP="$WORK/米兰读书安装器.app"
+ARCHIVE="$OUTPUT/MilanReader-Installer-$APP_VERSION.zip"
 
 /usr/bin/ditto "$ROOT/installer/apps/米兰读书安装器.app" "$APP"
 mkdir -p "$APP/Contents/Resources" "$OUTPUT"
@@ -14,6 +15,6 @@ mkdir -p "$APP/Contents/Resources" "$OUTPUT"
   --exclude='.git' --exclude='.venv' --exclude='.local' --exclude='node_modules' \
   --exclude='dist' --exclude='playwright-report' --exclude='test-results' \
   -C "$(dirname "$ROOT")" "$(basename "$ROOT")"
-/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUTPUT/米兰读书安装器-$APP_VERSION.zip"
-/usr/bin/shasum -a 256 "$OUTPUT/米兰读书安装器-$APP_VERSION.zip" > "$OUTPUT/米兰读书安装器-$APP_VERSION.zip.sha256"
-echo "$OUTPUT/米兰读书安装器-$APP_VERSION.zip"
+/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
+/usr/bin/shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+echo "$ARCHIVE"
