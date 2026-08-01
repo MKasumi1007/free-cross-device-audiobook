@@ -482,6 +482,12 @@ class MacGenerationWorker:
         job = self._make_job(book, task, profile)
         self.local_tasks.mark_syncing(task.task_id)
         try:
+            # Firestore only accepts READY audio while the matching generation
+            # request holds an active UPLOADING lease. Local audio has already
+            # been encoded, but the cloud task must still pass through the
+            # normal lifecycle before publishing its completion record.
+            fence.state("ENCODING")
+            fence.state("UPLOADING")
             publisher = (
                 FirestorePrivateAssetPublisher(
                     self.tasks.client,

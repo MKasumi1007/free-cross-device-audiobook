@@ -6,7 +6,7 @@ from pathlib import Path
 
 APP_NAME = "米兰读书"
 LEGACY_DATA_DIRECTORY = "听见书页"
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 AGENT_PORT = 17832
 DEFAULT_QWEN_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"

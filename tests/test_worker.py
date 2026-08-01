@@ -8,7 +8,9 @@ from types import SimpleNamespace
 
 from audiobook_core.models import Chapter, ParsedBook, PublicationMode
 from mac_agent.firebase_rest import FirebaseRestError
+from mac_agent.generation import PublishedAsset
 from mac_agent.task_cloud import CloudTask
+from mac_agent import worker as worker_module
 from mac_agent.worker import MacGenerationWorker
 
 
@@ -88,6 +90,7 @@ class FakeSyncLocalTasks:
         self.timeline = root / "timeline.json.gz"
         self.audio.write_bytes(b"audio")
         self.timeline.write_bytes(b"timeline")
+        self.sync_events: list[str] = []
 
     def next_task(self) -> None:
         return None
@@ -100,10 +103,21 @@ class FakeSyncLocalTasks:
         assert task_id == self.task_id
         return self.audio if kind == "audio" else self.timeline
 
+    def mark_syncing(self, _task_id: str) -> None:
+        self.sync_events.append("SYNCING")
+
+    def mark_sync_pending(self, _task_id: str, _message: str) -> None:
+        self.sync_events.append("PENDING")
+
+    def mark_synced(self, _task_id: str) -> None:
+        self.sync_events.append("SYNCED")
+
 
 class FakeSyncTasks:
     def __init__(self, task: CloudTask) -> None:
         self.task = task
+        self.client = object()
+        self.ready_records = []
 
     def active_owner(self) -> str:
         return self.task.owner_uid
@@ -132,6 +146,9 @@ class FakeSyncTasks:
     def transition(self, task: CloudTask, status: str, **changes) -> CloudTask:
         allowed = {name: value for name, value in changes.items() if hasattr(task, name)}
         return replace(task, status=status, **allowed)
+
+    def record_ready(self, task, job, published) -> None:
+        self.ready_records.append((task, job, published))
 
 
 def test_global_pause_does_not_claim_or_modify_chapter_tasks(
@@ -246,6 +263,78 @@ def test_full_cache_does_not_block_upload_of_ready_local_audio(
 
     assert worker.run_once() is True
     assert worker.last_state == "LOCAL_SYNCED"
+
+
+def test_local_sync_enters_uploading_before_recording_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    private = make_book("private", PublicationMode.LOCAL_ONLY)
+    task = CloudTask(
+        owner_uid="owner",
+        task_id="task-ready-local",
+        book_id=private.book_id,
+        status="GENERATING",
+        priority=1,
+        attempt_id=1,
+        deletion_generation=0,
+        start_segment_id=None,
+        target_seconds=600,
+        voice_version="voice-1",
+        storage_mode="PRIVATE_FIRESTORE",
+        lease_token="lease-token",
+    )
+    tasks = FakeSyncTasks(task)
+    local_tasks = FakeSyncLocalTasks(task.task_id, tmp_path)
+    worker = MacGenerationWorker(
+        tasks=tasks,  # type: ignore[arg-type]
+        library=FakeLibrary({private.book_id: private}),  # type: ignore[arg-type]
+        voices=object(),  # type: ignore[arg-type]
+        policy=object(),  # type: ignore[arg-type]
+        generator_factory=lambda _profile: object(),  # type: ignore[arg-type,return-value]
+        work_root=tmp_path / "work",
+        repository="owner/repository",
+        local_tasks=local_tasks,  # type: ignore[arg-type]
+    )
+    job = SimpleNamespace(chunk_id="chunk-local")
+    monkeypatch.setattr(worker, "_make_job", lambda *_args: job)
+
+    class FakePrivatePublisher:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def publish(self, _book_id: str, path: Path, _name: str) -> PublishedAsset:
+            digest = "a" * 64 if path == local_tasks.audio else "b" * 64
+            return PublishedAsset(
+                asset_id=1,
+                name=path.name,
+                url="",
+                byte_size=path.stat().st_size,
+                sha256=digest,
+                storage_mode="PRIVATE_FIRESTORE",
+                private_key=digest,
+                part_count=1,
+            )
+
+    monkeypatch.setattr(worker_module, "FirestorePrivateAssetPublisher", FakePrivatePublisher)
+    states: list[str] = []
+    fence = SimpleNamespace(task=task)
+
+    def record_state(status: str) -> None:
+        states.append(status)
+        fence.task = replace(fence.task, status=status)
+
+    fence.state = record_state
+
+    assert worker._publish_local_ready(
+        task,
+        private,
+        SimpleNamespace(voice_version="voice-1"),  # type: ignore[arg-type]
+        fence,  # type: ignore[arg-type]
+    ) is True
+    assert states == ["ENCODING", "UPLOADING", "READY"]
+    assert local_tasks.sync_events == ["SYNCING", "SYNCED"]
+    assert len(tasks.ready_records) == 1
 
 
 def test_quota_failures_use_progressive_backoff_without_disabling_local_work(
