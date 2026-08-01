@@ -128,4 +128,56 @@ describe("PlayerDock", () => {
     expect(screen.getByText("等待 Mac 开机")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "播放" })).toBeDisabled();
   });
+
+  it("loads Mac-local audio through fetch before assigning it to the player", async () => {
+    const chunk = {
+      ...readyChunk(),
+      storage_mode: "LOCAL_MAC",
+      asset_url: "http://127.0.0.1:17832/v1/local-generation/assets/task-a/audio",
+    } satisfies AudioChunk;
+    const fetchAudio = vi.fn(async () => new Response(
+      new Blob(["audio"], { type: "audio/mp4" }),
+      { status: 200 },
+    ));
+    const createObjectUrl = vi.fn(() => "blob:local-audio");
+    const revokeObjectUrl = vi.fn();
+    vi.stubGlobal("fetch", fetchAudio);
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+
+    const { container, unmount } = render(
+      <PlayerDock
+        book={demoBook}
+        ownerUid="owner-a"
+        chunks={[chunk]}
+        resumeSegmentId={chunk.start_segment_id}
+        resumeOffsetSeconds={0}
+        jumpRequest={null}
+        macOnline
+        onHighlight={vi.fn()}
+        onPosition={vi.fn()}
+        onBookmark={vi.fn()}
+        onRepair={vi.fn()}
+        onNotice={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(fetchAudio).toHaveBeenCalledWith(
+      chunk.asset_url,
+      expect.objectContaining({ cache: "no-store", signal: expect.any(AbortSignal) }),
+    ));
+    await waitFor(() => expect(container.querySelector("audio")).toHaveAttribute(
+      "src",
+      "blob:local-audio",
+    ));
+    unmount();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:local-audio");
+    vi.unstubAllGlobals();
+  });
 });

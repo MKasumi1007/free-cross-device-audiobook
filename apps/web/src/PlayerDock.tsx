@@ -124,14 +124,27 @@ export function PlayerDock({
       setSourceLoading(false);
       return;
     }
-    if (activeChunk.storage_mode !== "PRIVATE_FIRESTORE") {
+    if (
+      activeChunk.storage_mode !== "PRIVATE_FIRESTORE"
+      && activeChunk.storage_mode !== "LOCAL_MAC"
+    ) {
       setAudioSource(activeChunk.asset_url || "");
       setSourceLoading(false);
       return;
     }
-    if (!ownerUid || !activeChunk.private_audio_key) {
+    if (
+      activeChunk.storage_mode === "PRIVATE_FIRESTORE"
+      && (!ownerUid || !activeChunk.private_audio_key)
+    ) {
       setAudioSource("");
       setPlaybackError("这段私有音频缺少登录权限或文件索引。");
+      setSourceLoading(false);
+      return;
+    }
+    if (activeChunk.storage_mode === "LOCAL_MAC" && !activeChunk.asset_url) {
+      setAudioSource("");
+      setPlaybackError("这段本地音频缺少文件地址，请重新准备。");
+      setSourceLoading(false);
       return;
     }
     const controller = new AbortController();
@@ -139,18 +152,31 @@ export function PlayerDock({
     setAudioSource("");
     setSourceLoading(true);
     setPlaybackError("");
-    void loadPrivateAssetBytes(
-      ownerUid,
-      activeChunk.private_audio_key,
-      activeChunk.sha256,
-      controller.signal,
-    ).then((bytes) => {
+    const audioBlob = activeChunk.storage_mode === "LOCAL_MAC"
+      ? fetch(activeChunk.asset_url!, {
+          cache: "no-store",
+          signal: controller.signal,
+        }).then(async (response) => {
+          if (!response.ok) throw new Error(`LOCAL_AUDIO_HTTP_${response.status}`);
+          return response.blob();
+        })
+      : loadPrivateAssetBytes(
+          ownerUid,
+          activeChunk.private_audio_key!,
+          activeChunk.sha256,
+          controller.signal,
+        ).then((bytes) => new Blob([bytes], { type: "audio/mp4" }));
+    void audioBlob.then((blob) => {
       if (controller.signal.aborted) return;
-      objectUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/mp4" }));
+      objectUrl = URL.createObjectURL(blob);
       setAudioSource(objectUrl);
     }).catch((error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      setPlaybackError("这段私有音频暂时无法读取，请确认已经登录。");
+      setPlaybackError(
+        activeChunk.storage_mode === "LOCAL_MAC"
+          ? "这段本地音频暂时无法读取，请确认 Mac 已连接。"
+          : "这段私有音频暂时无法读取，请确认已经登录。",
+      );
     }).finally(() => {
       if (!controller.signal.aborted) setSourceLoading(false);
     });

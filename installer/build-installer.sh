@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_VERSION="0.5.1"
+APP_VERSION="0.5.2"
 OUTPUT="${1:-$ROOT/dist/installer}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/audiobook-package.XXXXXX")"
 trap '/bin/rm -rf "$WORK"' EXIT

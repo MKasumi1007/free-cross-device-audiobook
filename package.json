@@ -1,6 +1,6 @@
 {
   "name": "free-cross-device-audiobook",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "description": "Free cross-device audiobook PWA with a local Mac TTS agent",
   "workspaces": [

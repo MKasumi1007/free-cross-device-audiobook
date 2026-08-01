@@ -279,7 +279,12 @@ class ChunkPipeline:
         work.mkdir(parents=True, exist_ok=True, mode=0o700)
         with SingleTaskLock(self.root / "active-task.lock"):
             receipt = self._load_receipt(work, job)
-            if receipt is not None:
+            expected_storage = getattr(self.publisher, "storage_mode", "PUBLIC_GITHUB")
+            if (
+                receipt is not None
+                and receipt.audio.storage_mode == expected_storage
+                and receipt.timeline.storage_mode == expected_storage
+            ):
                 return replace(receipt, reused=True)
             self.fence.assert_current(job)
             timeline = self._generate_segments(work, job)
@@ -436,7 +441,19 @@ class ChunkPipeline:
         if value.get("job_fingerprint") != self._fingerprint(job):
             return []
         raw = value.get("segments", [])
-        return raw if isinstance(raw, list) else []
+        if not isinstance(raw, list):
+            return []
+        # A completed publication removes temporary WAV files but keeps its
+        # checkpoint. If that receipt belongs to another storage target, the
+        # audio has to be rendered again instead of trusting file-less entries.
+        segment_dir = work / "segments"
+        for item in raw:
+            segment_id = str(item.get("segment_id") or "") if isinstance(item, dict) else ""
+            if not segment_id or Path(segment_id).name != segment_id:
+                return []
+            if not (segment_dir / f"{segment_id}.wav").is_file():
+                return []
+        return raw
 
     def _load_receipt(self, work: Path, job: ChunkJob) -> PublishedChunk | None:
         path = work / "published.json"

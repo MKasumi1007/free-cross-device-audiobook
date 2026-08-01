@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from audiobook_core.models import Chapter, ParsedBook, PublicationMode
 from mac_agent.firebase_rest import FirebaseRestError
+from mac_agent.task_cloud import CloudTask
 from mac_agent.worker import MacGenerationWorker
 
 
@@ -77,6 +81,59 @@ class FakePausedPolicy:
         return "USER_PAUSED"
 
 
+class FakeSyncLocalTasks:
+    def __init__(self, task_id: str, root: Path) -> None:
+        self.task_id = task_id
+        self.audio = root / "audio.m4a"
+        self.timeline = root / "timeline.json.gz"
+        self.audio.write_bytes(b"audio")
+        self.timeline.write_bytes(b"timeline")
+
+    def next_task(self) -> None:
+        return None
+
+    def task(self, task_id: str) -> dict[str, str]:
+        assert task_id == self.task_id
+        return {"status": "READY", "sync_status": "PENDING"}
+
+    def asset_path(self, task_id: str, kind: str) -> Path:
+        assert task_id == self.task_id
+        return self.audio if kind == "audio" else self.timeline
+
+
+class FakeSyncTasks:
+    def __init__(self, task: CloudTask) -> None:
+        self.task = task
+
+    def active_owner(self) -> str:
+        return self.task.owner_uid
+
+    def touch_presence(self) -> None:
+        return None
+
+    def next_deletion(self, _owner_uid: str) -> None:
+        return None
+
+    def next_book_deletion(self, _owner_uid: str) -> None:
+        return None
+
+    def next_task(self, _owner_uid: str) -> CloudTask:
+        return self.task
+
+    def claim(self, task: CloudTask) -> CloudTask:
+        return replace(
+            task,
+            status="LEASED",
+            attempt_id=task.attempt_id + 1,
+            lease_token="lease-token",
+            lease_deadline=datetime.now(UTC) + timedelta(minutes=20),
+        )
+
+    def transition(self, task: CloudTask, status: str, **changes) -> CloudTask:
+        allowed = {name: value for name, value in changes.items() if hasattr(task, name)}
+        return replace(task, status=status, **allowed)
+
+
 def test_global_pause_does_not_claim_or_modify_chapter_tasks(
     monkeypatch,
     tmp_path: Path,
@@ -142,6 +199,53 @@ def test_generation_waits_when_five_hour_audio_cache_is_full(tmp_path: Path) -> 
     assert worker._audio_cache_is_full("owner") is True
     assert worker._audio_cache_is_full("owner") is True
     assert tasks.calls == 1
+
+
+def test_full_cache_does_not_block_upload_of_ready_local_audio(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    private = make_book("private", PublicationMode.LOCAL_ONLY)
+    cloud_task = CloudTask(
+        owner_uid="owner",
+        task_id="task-ready-local",
+        book_id=private.book_id,
+        status="QUEUED",
+        priority=1,
+        attempt_id=0,
+        deletion_generation=0,
+        start_segment_id=None,
+        target_seconds=600,
+        voice_version="voice-1",
+        storage_mode="PRIVATE_FIRESTORE",
+    )
+    tasks = FakeSyncTasks(cloud_task)
+    local_tasks = FakeSyncLocalTasks(cloud_task.task_id, tmp_path)
+    worker = MacGenerationWorker(
+        tasks=tasks,  # type: ignore[arg-type]
+        library=FakeLibrary({private.book_id: private}),  # type: ignore[arg-type]
+        voices=SimpleNamespace(load=lambda: SimpleNamespace(
+            confirmed=True,
+            voice_version="voice-1",
+        )),  # type: ignore[arg-type]
+        policy=SimpleNamespace(pause_reason=lambda: None),  # type: ignore[arg-type]
+        generator_factory=lambda _profile: object(),  # type: ignore[arg-type,return-value]
+        work_root=tmp_path / "work",
+        repository="owner/repository",
+        local_tasks=local_tasks,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(worker, "_periodic_cleanup", lambda: None)
+    monkeypatch.setattr(worker, "_periodic_retention", lambda _owner_uid: None)
+    monkeypatch.setattr(worker, "_ensure_book_text", lambda *_args: None)
+    monkeypatch.setattr(worker, "_publish_local_ready", lambda *_args: True)
+    monkeypatch.setattr(
+        worker,
+        "_audio_cache_is_full",
+        lambda _owner_uid: (_ for _ in ()).throw(AssertionError("capacity gate called")),
+    )
+
+    assert worker.run_once() is True
+    assert worker.last_state == "LOCAL_SYNCED"
 
 
 def test_quota_failures_use_progressive_backoff_without_disabling_local_work(

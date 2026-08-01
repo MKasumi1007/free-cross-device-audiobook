@@ -243,6 +243,37 @@ def test_local_only_book_can_generate_to_mac_without_cloud_upload(tmp_path: Path
     assert generator.calls
 
 
+def test_published_receipt_is_not_reused_for_a_different_storage_target(
+    tmp_path: Path,
+) -> None:
+    job = make_job(PublicationMode.LOCAL_ONLY)
+    cloud_generator = FakeGenerator()
+    cloud_publisher = FakePrivatePublisher()
+    ChunkPipeline(
+        tmp_path,
+        cloud_generator,
+        cloud_publisher,
+        FakeFence(),
+        encoder=FakeEncoder(),
+    ).run(job)
+
+    local_generator = FakeGenerator()
+    local_publisher = FakeLocalPublisher()
+    local = ChunkPipeline(
+        tmp_path,
+        local_generator,
+        local_publisher,
+        FakeFence(),
+        encoder=FakeEncoder(),
+    ).run(job)
+
+    assert local.reused is False
+    assert local.audio.storage_mode == "LOCAL_MAC"
+    assert local.timeline.storage_mode == "LOCAL_MAC"
+    assert local_generator.calls
+    assert len(local_publisher.published) == 2
+
+
 def test_stale_process_lock_is_recovered_after_restart(tmp_path: Path) -> None:
     (tmp_path / "active-task.lock").write_text("99999999", encoding="ascii")
     pipeline = ChunkPipeline(

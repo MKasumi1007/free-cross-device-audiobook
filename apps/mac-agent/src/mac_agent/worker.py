@@ -255,7 +255,23 @@ class MacGenerationWorker:
             if self._sync_private_book_texts(owner_uid):
                 return True
             return self._maybe_reconcile(owner_uid)
-        if self._audio_cache_is_full(owner_uid):
+        local_ready = (
+            self.local_tasks.task(task.task_id)
+            if self.local_tasks is not None
+            else None
+        )
+        has_local_audio_to_sync = (
+            local_ready is not None
+            and local_ready.get("status") == "READY"
+            and local_ready.get("sync_status") != "SYNCED"
+            and self.local_tasks is not None
+            and self.local_tasks.asset_path(task.task_id, "audio") is not None
+            and self.local_tasks.asset_path(task.task_id, "timeline") is not None
+        )
+        # The five-hour limit controls creation of more cloud audio. It must not
+        # prevent already-generated local audio from being copied to the cloud;
+        # otherwise phone playback remains stuck at "waiting to generate".
+        if not has_local_audio_to_sync and self._audio_cache_is_full(owner_uid):
             self._unload_generator()
             self.last_state = "WAITING_FOR_CACHE_SPACE"
             return False

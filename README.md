@@ -4,7 +4,7 @@
 
 在线网页：<https://mkasumi1007.github.io/free-cross-device-audiobook/>
 
-## 当前状态（0.5.1）
+## 当前状态（0.5.2）
 
 | 项目 | 证据状态 |
 | --- | --- |
@@ -25,7 +25,7 @@
 
 ## 普通用户安装
 
-1. 从 [Releases](https://github.com/MKasumi1007/free-cross-device-audiobook/releases/tag/v0.5.1) 下载 `MilanReader-Installer-0.5.1.zip`。
+1. 从 [Releases](https://github.com/MKasumi1007/free-cross-device-audiobook/releases/tag/v0.5.2) 下载 `MilanReader-Installer-0.5.2.zip`。
 2. 解压后双击 `米兰读书安装器.app`。这是未购买 Apple Developer 证书的开源应用；如果 Gatekeeper 拦截，请在 Finder 中右键它、选择“打开”，再确认一次。
 3. 首次安装会自动准备独立 Python、Agent、Qwen 依赖、FFmpeg、约 2.3 GiB 模型，并执行真实中文生成与 M4A 自检。需要网络、Apple Silicon Mac 和至少 6 GiB 可用磁盘；耗时取决于网速与机器。
 4. 安装成功后会自动启动后台服务，并在 `~/Applications/米兰读书/` 放置网页、更新和卸载入口。

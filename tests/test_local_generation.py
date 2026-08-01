@@ -135,3 +135,53 @@ def test_ready_local_audio_is_indexed_for_loopback_playback(tmp_path: Path) -> N
     assert status["audio_chunks"][0]["storage_mode"] == "LOCAL_MAC"
     assert status["audio_chunks"][0]["asset_url"].endswith("/audio")
     assert store.asset_path(str(claimed["task_id"]), "audio") is not None
+
+
+def test_ready_task_with_missing_local_asset_is_queued_for_recovery(tmp_path: Path) -> None:
+    store = LocalGenerationStore(tmp_path / "local")
+    store.enqueue("owner-1", make_book(), ["chapter-1"], "voice-1")
+    pending = store.next_task()
+    assert pending is not None
+    claimed = store.claim(str(pending["task_id"]))
+    publisher = LocalAssetPublisher(store.assets_root, str(claimed["task_id"]))
+    audio_source = tmp_path / "source.m4a"
+    timeline_source = tmp_path / "timeline.json.gz"
+    audio_source.write_bytes(b"audio")
+    timeline_source.write_bytes(b"timeline")
+    audio = publisher.publish("book-1", audio_source, "chunk.m4a")
+    timeline = publisher.publish("book-1", timeline_source, "timeline.json.gz")
+    segments = tuple(
+        SegmentJob(
+            segment_id=item.segment_id,
+            chapter_id=item.chapter_id,
+            order=item.order,
+            spoken_text=item.spoken_text,
+            text_hash=item.text_hash,
+        )
+        for item in make_book().chapters[0].segments
+    )
+    job = ChunkJob(
+        task_id=str(claimed["task_id"]),
+        book_id="book-1",
+        chunk_id="chunk-00000-segment-",
+        chapter_id="chapter-1",
+        publication_mode=PublicationMode.LOCAL_ONLY,
+        voice_version="voice-1",
+        attempt_id=int(claimed["attempt_id"]),
+        lease_token=str(claimed["lease_token"]),
+        deletion_generation=0,
+        segments=segments,
+    )
+    store.record_ready(
+        str(claimed["task_id"]),
+        job,
+        PublishedChunk("chunk-00000-segment-", 5.0, audio, timeline),
+    )
+    store.asset_path(str(claimed["task_id"]), "audio").unlink()  # type: ignore[union-attr]
+
+    recovered = store.next_task()
+
+    assert recovered is not None
+    assert recovered["status"] == "FAILED_RETRYABLE"
+    assert recovered["error_code"] == "LOCAL_ASSET_MISSING"
+    assert store.status()["audio_chunks"] == []

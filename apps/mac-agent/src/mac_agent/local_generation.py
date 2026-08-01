@@ -145,6 +145,22 @@ class LocalGenerationStore:
             recovered = False
             for task in tasks:
                 status = str(task.get("status") or "")
+                if (
+                    status == "READY"
+                    and task.get("sync_status") != "SYNCED"
+                    and not self._ready_assets_exist(task)
+                ):
+                    task.update({
+                        "status": "FAILED_RETRYABLE",
+                        "retry_not_before": None,
+                        "progress_stage": "QUEUED",
+                        "error_code": "LOCAL_ASSET_MISSING",
+                        "sync_status": "PENDING",
+                        "sync_error": "",
+                        "updated_at": _now(),
+                    })
+                    status = "FAILED_RETRYABLE"
+                    recovered = True
                 if status in ACTIVE_STATUSES:
                     task.update({
                         "status": "FAILED_RETRYABLE",
@@ -335,7 +351,13 @@ class LocalGenerationStore:
     def status(self) -> dict[str, Any]:
         with self._lock:
             tasks = [self._public_task(item) for item in self._read()["tasks"]]
-        chunks = [self._audio_chunk(item) for item in tasks if item.get("status") == "READY"]
+        chunks = [
+            self._audio_chunk(item)
+            for item in tasks
+            if item.get("status") == "READY"
+            and self.asset_path(str(item.get("task_id") or ""), "audio") is not None
+            and self.asset_path(str(item.get("task_id") or ""), "timeline") is not None
+        ]
         return {
             "schema_version": self.SCHEMA_VERSION,
             "tasks": tasks,
@@ -359,6 +381,18 @@ class LocalGenerationStore:
         if not name or candidate.parent != parent or not candidate.is_file():
             return None
         return candidate
+
+    def _ready_assets_exist(self, task: dict[str, Any]) -> bool:
+        task_id = str(task.get("task_id") or "")
+        if not _safe_task_id(task_id):
+            return False
+        parent = (self.assets_root / task_id).resolve()
+        for field in ("asset_name", "timeline_name"):
+            name = str(task.get(field) or "")
+            candidate = (parent / name).resolve()
+            if not name or candidate.parent != parent or not candidate.is_file():
+                return False
+        return True
 
     def task(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
