@@ -129,6 +129,49 @@ describe("PlayerDock", () => {
     expect(screen.getByRole("button", { name: "播放" })).toBeDisabled();
   });
 
+  it("consumes each chapter jump once when refreshed chunk data rerenders the player", async () => {
+    const chunk = readyChunk();
+    const onHighlight = vi.fn();
+    const onPosition = vi.fn();
+    const onNotice = vi.fn();
+    const jumpRequest = {
+      key: 1,
+      segmentId: chunk.start_segment_id,
+      autoplay: false,
+    };
+    const player = (chunks: AudioChunk[], jumpKey: number) => (
+      <PlayerDock
+        book={demoBook}
+        ownerUid="owner-a"
+        chunks={chunks}
+        resumeSegmentId=""
+        resumeOffsetSeconds={0}
+        jumpRequest={{ ...jumpRequest, key: jumpKey }}
+        macOnline
+        onHighlight={onHighlight}
+        onPosition={onPosition}
+        onBookmark={vi.fn()}
+        onRepair={vi.fn()}
+        onNotice={onNotice}
+      />
+    );
+    const { container, rerender } = render(player([chunk], 1));
+    const audio = container.querySelector("audio")!;
+    Object.defineProperty(audio, "duration", { configurable: true, value: 20 });
+    Object.defineProperty(audio, "readyState", { configurable: true, value: 4 });
+    fireEvent.loadedMetadata(audio);
+    await waitFor(() => expect(audio.currentTime).toBe(0));
+
+    audio.currentTime = 8;
+    fireEvent.timeUpdate(audio);
+    rerender(player([{ ...chunk }], 1));
+    await waitFor(() => expect(loadChunkTimeline).toHaveBeenCalledTimes(2));
+    expect(audio.currentTime).toBe(8);
+
+    rerender(player([{ ...chunk }], 2));
+    await waitFor(() => expect(audio.currentTime).toBe(0));
+  });
+
   it("loads Mac-local audio through fetch before assigning it to the player", async () => {
     const chunk = {
       ...readyChunk(),

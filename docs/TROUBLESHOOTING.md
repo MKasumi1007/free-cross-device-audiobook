@@ -36,7 +36,7 @@
 | `FFMPEG_MISSING` | 音频工具缺失 | 重新运行安装器；无需手工安装 Homebrew |
 | `FFMPEG_ENCODING_FAILED` | M4A 编码失败 | 查看私有日志中的退出码/stderr；WAV 检查点保留 |
 | `REFERENCE_TEXT_REQUIRED` / `REFERENCE_AUDIO_MISSING` | 声音配置不完整 | 重新选择录音并填写实际参考文字 |
-| `TTS_WORKER_EXITED` | 模型子进程退出或协议失败 | 更新到 0.2.0；检查 qwen-stderr、内存和最近 traceback |
+| `TTS_WORKER_EXITED` | 模型子进程退出或协议失败 | 更新到最新正式版本；检查 mlx/qwen stderr、内存和最近 traceback |
 | `STALE_LEASE` | 任务已暂停、撤销、过期或被新尝试接管 | 旧结果不会发布；等待当前任务重新领取 |
 | 免费额度保护暂停 | 应用接近保守阈值 | 等下一个 UTC 日；不要启用 Blaze |
 

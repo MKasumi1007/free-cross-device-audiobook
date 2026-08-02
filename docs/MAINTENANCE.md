@@ -48,13 +48,13 @@ shasum -a 256 -c dist/installer/*.sha256
 - 不要为了修复查询 403 使用宽泛 collection-group read；优先把查询约束到已知 owner/book 路径。
 - `audioChunks` 规则复杂度接近表达式上限，是已知维护风险；重构必须保留租约、删除代次和私密资产 READY 屏障。
 
-## 发布 0.2.0
+## 发布新版本
 
 1. 确认工作树只含目标修改，安全扫描没有本机路径或凭据。
 2. 完成全套测试和真实 Mac 验收，更新 `ACCEPTANCE.md`。
 3. 提交并推送分支，创建 PR，让 CI 全绿。
 4. 合并到 `main` 后确认 Pages workflow 成功，并核对线上 `version.json` 的 build ID。
-5. 创建 `v0.2.0` tag；installer workflow 产生 zip/checksum artifact。
+5. 创建与项目版本一致的 `vX.Y.Z` tag；installer workflow 产生 zip/checksum artifact。
 6. 创建 GitHub Release，附上 zip、checksum、Gatekeeper 说明、支持硬件和未完成真机项。
 7. 从 Release 下载一次，校验 checksum，并在不依赖仓库的目录执行安装。
 
