@@ -21,7 +21,7 @@
 | Mac Agent | `0.5.3`，健康检查通过 |
 | 后台 Worker | `IDLE`，无错误，无云端退避 |
 | 最近本地同步验收 | 25 个本地音频块全部 `SYNCED`，待同步为 0 |
-| 自动化 | Web 47、Firestore Rules 27、Python 123；正式 CI、Pages、安装器工作流均成功 |
+| 自动化 | Web 48、Firestore Rules 27、Python 123；正式 CI、Pages、安装器工作流均成功 |
 
 上述“25 个音频块”只记录数量和同步结果，不记录用户身份、书名、正文、声音或资产标识。
 
@@ -354,6 +354,8 @@ bash installer/install.sh \
 
 真实修复结果：缺失短音频自动补回，25 个本地块全部同步，Mac 播放器从 00:00 正常前进，Worker 回到 `IDLE`。相关回归测试位于 `PlayerDock.test.tsx`、`test_generation.py`、`test_local_generation.py` 和 `test_worker.py`。
 
+2026-08-02 又定位到一个独立的网页播放器问题：点击章节后，旧的 `jumpRequest` 会在音频状态刷新时被重复处理，使 `audio.currentTime` 每隔数秒回到章节开头。现在播放器按请求 `key` 只消费一次，同一个任务快照刷新不会再次跳播；新的回归测试覆盖“同一请求不回零、新请求仍可跳转”。
+
 ## 14. 已验证与仍待验证
 
 已验证：
@@ -374,13 +376,13 @@ bash installer/install.sh \
 4. Mac 物理重启后的自动恢复；目前只验证 launchd 重载和进程重启。
 5. 新用户从 Release 下载后的完整 Gatekeeper 首装。
 6. `audioChunks` Rules 接近 Emulator 1,000 表达式上限，需要在不削弱权限的前提下重构。
-7. 大批量音频状态更新期间，继续观察用户手动跳播是否会被新的任务快照干扰；若复现，优先审查 `PlayerDock` 的 `jumpRequest` 一次性消费逻辑。
+7. iPhone 长章节连续播放和跨音频块自动续播仍需在最新 Pages 构建上完成最终真机复验。
 
 ## 15. 建议的后续优先级
 
 1. **P0：删除/重新生成真机闭环。** 这是当前唯一尚未完成的核心数据生命周期。
 2. **P0：iPhone 最新 Pages 刷新复验。** 确认所有已同步章节不再显示等待生成。
-3. **P1：播放器跳播一次性消费。** 为同步过程中频繁快照增加回归测试。
+3. **P1：iPhone 长章节连续播放复验。** 覆盖前后台切换以及跨音频块自动续播。
 4. **P1：Rules 复杂度重构。** 保持 owner、active worker、lease、private asset READY 和 deletion generation 五层屏障。
 5. **P1：真实物理重启。** 记录开机后 Agent、队列、检查点和播放恢复。
 6. **P2：签名/公证评估。** 会产生费用，只有用户明确同意后才能开始。

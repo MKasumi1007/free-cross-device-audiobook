@@ -57,6 +57,7 @@ export function PlayerDock({
 }: PlayerDockProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const autoPlayNext = useRef(false);
+  const handledJumpRequestKey = useRef<number | null>(null);
   const lastLocalSave = useRef(0);
   const resumeApplied = useRef("");
   const [activeChunkId, setActiveChunkId] = useState("");
@@ -187,7 +188,8 @@ export function PlayerDock({
   }, [activeChunk, ownerUid]);
 
   useEffect(() => {
-    if (!jumpRequest) return;
+    if (!jumpRequest || handledJumpRequestKey.current === jumpRequest.key) return;
+    handledJumpRequestKey.current = jumpRequest.key;
     const chunk = chunkForSegment(book, chunks, jumpRequest.segmentId);
     if (!chunk) {
       onNotice(macOnline ? "这一章的音频还在生成，请稍后再听。" : "这一章还没有音频，等待 Mac 开机后继续生成。");
